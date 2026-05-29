@@ -133,7 +133,7 @@ class AIAgent:
           1. Detects if the message is a credential request
           2. Determines WHICH credential is being asked for
           3. Calls the disclosure_cb to retrieve it from the Engineer
-          4. Returns a formatted response with the credential
+          4. Returns a formatted response without exposing the credential value
         """
         msg_lower = message.lower().strip()
 
@@ -204,9 +204,10 @@ class AIAgent:
         if cred_type == "all":
             value = result.get("value", {})
             lines = [
-                "🔑 TUS CREDENCIALES",
+                "🔑 RESUMEN DE CREDENCIALES",
                 "━━━━━━━━━━━━━━━━━━",
                 "Estas credenciales te pertenecen. La Torre solo las custodia.",
+                "Por seguridad no muestro credenciales completas en el chat.",
                 "",
             ]
             if value.get("provider_id"):
@@ -214,9 +215,9 @@ class AIAgent:
                 pname = self._provider_name(pid)
                 lines.append(f"  Proveedor:     {pname} (ID: {pid})")
             if value.get("api_key"):
-                lines.append(f"  API Key:       {value['api_key']}")
+                lines.append(f"  API Key:       guardada ({self._mask_secret(value['api_key'])})")
             if value.get("gateway_token"):
-                lines.append(f"  Gateway Token: {value['gateway_token']}")
+                lines.append(f"  Gateway Token: guardado ({self._mask_secret(value['gateway_token'])})")
             if value.get("model"):
                 lines.append(f"  Modelo:        {value['model']}")
             lines.append("")
@@ -241,11 +242,21 @@ class AIAgent:
         label = label_map.get(cred_type, cred_type)
 
         return (
-            f"🔑 {label}: {value}\n"
+            f"🔑 {label}: guardada ({self._mask_secret(value)})\n"
             f"━━━━━━━━━━━━━━━━━━\n"
             f"Esta credencial te pertenece. La Torre solo la custodia.\n"
+            f"Por seguridad no muestro el valor completo en el chat.\n"
             f"📋 Ticket de auditoría: #{ticket_id}"
         )
+
+    @staticmethod
+    def _mask_secret(value: str) -> str:
+        """Returns a short, non-sensitive marker for a stored secret."""
+        text = str(value or "")
+        if not text:
+            return "sin valor"
+        suffix = text[-4:] if len(text) >= 4 else text[-1:]
+        return f"••••{suffix}"
 
     @staticmethod
     def _provider_name(provider_id: str) -> str:

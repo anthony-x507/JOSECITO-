@@ -8,9 +8,18 @@ Uso: python3 test_system_commands.py
 
 import sys
 import os
+import tempfile
+from pathlib import Path
 
 # Asegurar que podemos importar los módulos del proyecto
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# Aislar estado local: este script no debe leer tickets reales ni residuos de
+# otras baterías de prueba en ~/.digos.
+TEST_HOME = Path(tempfile.mkdtemp(prefix="digos_system_commands_"))
+os.environ["HOME"] = str(TEST_HOME)
+(TEST_HOME / ".digos" / "profiles").mkdir(parents=True, exist_ok=True)
+(TEST_HOME / ".digos" / "logs").mkdir(parents=True, exist_ok=True)
 
 from digos_lib.core_tower import TorreDeControl
 from digos_lib.core_gateways import GatewayCLI

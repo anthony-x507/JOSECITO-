@@ -1191,7 +1191,8 @@ class TestAIAgent(unittest.TestCase):
             },
         )
         response = agent._check_credential_request("dame mi api key")
-        self.assertIn("sk-test-123", response)
+        self.assertNotIn("sk-test-123", response)
+        self.assertIn("••••-123", response)
         self.assertIn("T123", response)
 
     # ─────────────────────────────────────
@@ -1422,7 +1423,8 @@ class TestAIAgent(unittest.TestCase):
             "ticket_id": "T111",
         }
         response = self.agent._format_disclosure_response(result)
-        self.assertIn("sk-secret-456", response)
+        self.assertNotIn("sk-secret-456", response)
+        self.assertIn("••••-456", response)
         self.assertIn("T111", response)
 
     def test_format_disclosure_ok_false(self):
@@ -1444,8 +1446,10 @@ class TestAIAgent(unittest.TestCase):
             "ticket_id": "T222",
         }
         response = self.agent._format_disclosure_response(result)
-        self.assertIn("sk-all-789", response)
-        self.assertIn("123:abc", response)
+        self.assertNotIn("sk-all-789", response)
+        self.assertNotIn("123:abc", response)
+        self.assertIn("••••-789", response)
+        self.assertIn("••••:abc", response)
         self.assertIn("DeepSeek", response)
         self.assertIn("T222", response)
 
@@ -1478,7 +1482,8 @@ class TestAIAgent(unittest.TestCase):
             },
         )
         result = agent.process_message("dame mi api key")
-        self.assertIn("sk-test-path", result)
+        self.assertNotIn("sk-test-path", result)
+        self.assertIn("•••", result)
         # Should NOT store the real credential in message history
         last_msg = agent._messages[-1]
         self.assertNotIn("sk-test-path", last_msg["content"])
