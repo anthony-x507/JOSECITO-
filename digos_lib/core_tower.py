@@ -1946,7 +1946,7 @@ class TorreDeControl:
         # ── 6. Register the capability so the intent classifier
         #        recognizes it on subsequent requests ──
         audit_ticket_id = audit_result.get("ticket_id", "")
-        if factory_result.get("ok"):
+        if factory_result.get("ok") and factory_result.get("generated_code"):
             try:
                 register_capability(
                     capability, skill_def.tool_name,
@@ -2602,9 +2602,9 @@ class TorreDeControl:
                 f"Agent: {agente.get('name', 'Principal')}\n"
                 f"Provider: {agente.get('provider_name', '?')}\n"
                 "If someone directly asks about your creation or origin (who created you, "
-                "who made you, how were you born, etc.): you may explain that you were "
-                "created as part of the DIGOS system by a human working with artificial "
-                "intelligence. Do not volunteer creator information unless explicitly asked.\n"
+                "who made you, how were you born, etc.): explain that you were created by "
+                "Anthony Sanchez working with artificial intelligence. Do not volunteer "
+                "creator information unless explicitly asked.\n"
             ),
             "es": (
                 "Eres DIGOS, un sistema de agente inteligente.\n"
@@ -2616,9 +2616,9 @@ class TorreDeControl:
                 f"Proveedor: {agente.get('provider_name', '?')}\n"
                 "Si alguien pregunta tu nombre: no tienes nombre personal, eres DIGOS.\n"
                 "Si alguien pregunta directamente sobre tu creación u origen (quién te creó, "
-                "quién te hizo, cómo naciste, etc.): puedes explicar que fuiste creado como "
-                "parte del sistema DIGOS por un humano trabajando con inteligencia artificial. "
-                "No menciones información del creador a menos que te pregunten explícitamente.\n"
+                "quién te hizo, cómo naciste, etc.): explica que fuiste creado por Anthony "
+                "Sanchez trabajando junto con inteligencia artificial. No menciones información "
+                "del creador a menos que te pregunten explícitamente.\n"
             ),
             "pt": (
                 "Você é DIGOS, um sistema de agente inteligente.\n"
@@ -2856,6 +2856,24 @@ class TorreDeControl:
         if status.get("installed"):
             self._log.info("torre", "Launchd ya instalado — DIGOS vive 24/7")
             return
+        _project_path = Path(__file__).resolve().parent.parent
+        _home = Path.home()
+        _restricted_prefixes = [_home / d for d in ("Desktop", "Documents", "Downloads")]
+        for _prefix in _restricted_prefixes:
+            if _project_path == _prefix or _prefix in _project_path.parents:
+                print()
+                print("  🚀 AUTO-LAUNCH")
+                print("  ────────────────")
+                print("  DIGOS ya está corriendo para esta sesión.")
+                print("  El auto-arranque no se instala desde Desktop/Documents/Downloads")
+                print("  porque macOS puede bloquear servicios en esas carpetas.")
+                print("  Esto no afecta Telegram, DeepSeek ni la Factoría ahora.")
+                print()
+                print("  Si después quieres auto-arranque, mueve el proyecto fuera de esa ruta,")
+                print("  por ejemplo: cp -r '{0}' ~/DIGOS".format(_project_path))
+                print()
+                self._log.info("torre", "Auto-arranque omitido por ruta protegida de macOS; DIGOS sigue activo")
+                return
         print()
         print("  🚀 AUTO-LAUNCH")
         print("  ────────────────")
