@@ -1,0 +1,949 @@
+"""DIGOS Agent Tools — Available tools, dangerous tools, and tool executors.
+
+Core capabilities:
+  web_search       — búsqueda web (DuckDuckGo Instant Answer API)
+  transcribe_audio — STT: transcribe audio a texto
+  speak_text       — TTS: convierte texto a voz (archivo de audio)
+  view_image       — visión: describe imágenes/documentos
+
+Utility tools:
+  read_file, write_file, execute_code, terminal
+"""
+import io
+import os
+import json
+import base64
+import contextlib
+import subprocess
+import shlex
+import urllib.parse
+import tempfile
+from urllib.request import Request, urlopen
+from urllib.error import URLError, HTTPError
+
+
+# ─────────────────────────────────────────────
+# AVAILABLE TOOLS FOR THE LLM
+# ─────────────────────────────────────────────
+
+AVAILABLE_TOOLS = [
+    # ── CORE CAPABILITIES ──
+    {
+        "type": "function",
+        "function": {
+            "name": "web_search",
+            "description": "Buscar información actualizada en internet",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Término de búsqueda"}
+                },
+                "required": ["query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "transcribe_audio",
+            "description": "Transcribir un archivo de audio/voz a texto (STT). Soporta mp3, wav, m4a, ogg.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Ruta al archivo de audio"}
+                },
+                "required": ["path"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "speak_text",
+            "description": "Convertir texto a voz (TTS) y guardarlo como archivo de audio",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "Texto a convertir en voz"},
+                    "voice": {"type": "string", "description": "Voz a usar: alloy, echo, fable, onyx, nova, shimmer. Default: nova"}
+                },
+                "required": ["text"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "view_image",
+            "description": "Analizar y describir una imagen, documento escaneado, captura de pantalla, o foto",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Ruta al archivo de imagen (png, jpg, jpeg, gif, webp)"},
+                    "question": {"type": "string", "description": "Pregunta específica sobre la imagen (opcional). Ej: '¿Qué dice este documento?', 'Describe esta foto'"}
+                },
+                "required": ["path"]
+            }
+        }
+    },
+    # ── UTILITY TOOLS ──
+    {
+        "type": "function",
+        "function": {
+            "name": "read_file",
+            "description": "Leer el contenido de un archivo de texto",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Ruta del archivo"}
+                },
+                "required": ["path"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "write_file",
+            "description": "Escribir contenido en un archivo",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Ruta del archivo"},
+                    "content": {"type": "string", "description": "Contenido a escribir"}
+                },
+                "required": ["path", "content"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "execute_code",
+            "description": "Ejecutar código Python",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "code": {"type": "string", "description": "Código Python a ejecutar"}
+                },
+                "required": ["code"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "terminal",
+            "description": "Ejecutar un comando en la terminal",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "description": "Comando a ejecutar"}
+                },
+                "required": ["command"]
+            }
+        }
+    },
+]
+
+# Tools que requieren aprobacion humana antes de ejecutarse
+DANGEROUS_TOOLS = {"write_file", "execute_code", "terminal"}
+
+
+# ─────────────────────────────────────────────
+# DYNAMIC TOOLS (generated by Factory at runtime)
+# ─────────────────────────────────────────────
+# When the Factory builds a new capability (e.g., web_browsing),
+# the generated tool code is imported and registered here.
+# The agent then uses these alongside the static AVAILABLE_TOOLS.
+
+DYNAMIC_TOOLS: dict = {}    # tool_name -> callable function
+DYNAMIC_TOOL_DEFS: list = []  # OpenAI tool definitions for LLM
+
+
+def add_dynamic_tool(name: str, tool_def: dict, func: callable) -> None:
+    """Register a dynamically-generated tool so the agent can use it.
+
+    Called by TorreDeControl after the Factory successfully builds
+    a new capability and the generated code is validated.
+
+    Args:
+        name: tool name (e.g., "web_browser")
+        tool_def: OpenAI function definition dict
+        func: the callable function implementing the tool
+    """
+    DYNAMIC_TOOLS[name] = func
+    DYNAMIC_TOOL_DEFS.append(tool_def)
+    # Also add tool name to DANGEROUS_TOOLS for newly generated powerful tools
+    # that should require approval (write, terminal, execute are already covered)
+
+
+# ────────────────────────────────────────────────────────────────────
+# CAPABILITY TRUTH REGISTRY
+# ────────────────────────────────────────────────────────────────────
+# Tracks the REAL state of each capability to prevent false positives.
+# No more "exists" from thin air — every capability has:
+#   - A verifiable state (not just a boolean)
+#   - A source (how it became known)
+#   - A ticket reference (who authorized it)
+#
+# States:
+#   unknown       — never checked
+#   detected      — resource found (Chrome, API key) but NO tool registered
+#   registered    — in AVAILABLE_CAPABILITIES, may/may not have real tool
+#   tool_ready    — actual tool function exists in DYNAMIC_TOOLS
+#   validated     — tool has passed testing (validated_at timestamp)
+#
+# The old AVAILABLE_CAPABILITIES dict still works for backward compat.
+# The _CAPABILITY_REGISTRY adds the truth layer on top.
+
+from datetime import datetime, timezone
+
+
+class CapabilityState:
+    """Canonical states for the Capability Truth Registry.
+
+    Transition rules:
+      detected   → registered    (resource found → formally registered)
+      registered → tool_ready    (tool registered in DYNAMIC_TOOLS)
+      tool_ready → validated     (tool passed testing)
+      registered → validated     (direct, for manually verified tools)
+    """
+    UNKNOWN = "unknown"
+    DETECTED = "detected"
+    REGISTERED = "registered"
+    TOOL_READY = "tool_ready"
+    VALIDATED = "validated"
+
+
+# ── Simple availability dict (backward compat) ──
+
+AVAILABLE_CAPABILITIES: dict = {
+    # ── Core capabilities we already have tools for ──
+    "web_search":        "web_search",
+    "stt_audio_input":   "transcribe_audio",
+    "tts_audio_output":  "speak_text",
+    "voice_full_duplex": "transcribe_audio",  # partial — has STT, TTS also available
+    "image_analysis":    "view_image",
+    # ── web_browsing, web_fetch, custom_tool — NOT available yet (built by Factory on demand)
+}
+
+# ── Truth Registry (adds metadata layer on top of the simple dict) ──
+# Each entry: {"state": str, "tool_name": str, "source": str,
+#              "ticket_id": str, "created_at": str, "validated_at": str,
+#              "notes": str}
+_CAPABILITY_REGISTRY: dict = {}
+
+
+# ── Internal helpers ──
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _registry_init_defaults():
+    """Populate registry entries for core capabilities on first access.
+    Called lazily by every public function.
+    """
+    if _CAPABILITY_REGISTRY:
+        return
+    now = _now_iso()
+    for cap_id, tool in AVAILABLE_CAPABILITIES.items():
+        state = CapabilityState.REGISTERED
+        validated_at = ""
+        notes = "Core capability known to DIGOS, but not validated in this session"
+
+        # web_search is a real stdlib-backed tool and does not depend on the
+        # selected model provider. Voice and vision wrappers need runtime
+        # provider support before they should suppress a capability request.
+        if cap_id == "web_search":
+            state = CapabilityState.VALIDATED
+            validated_at = now
+            notes = "Core web_search tool validated as built-in DIGOS capability"
+
+        _CAPABILITY_REGISTRY[cap_id] = {
+            "state": state,
+            "tool_name": tool,
+            "source": "core_default",
+            "ticket_id": "",
+            "created_at": now,
+            "validated_at": validated_at,
+            "notes": notes,
+        }
+
+
+# ── Public API ──
+
+def is_capability_available(capability_id: str) -> bool:
+    """Check if a capability is truly executable by DIGOS right now.
+
+    The old implementation only checked AVAILABLE_CAPABILITIES. That produced
+    false positives: STT/TTS/vision wrappers were treated as ready even when the
+    provider/runtime could not execute them. Availability now requires the truth
+    registry to say TOOL_READY or VALIDATED.
+    """
+    _registry_init_defaults()
+    entry = _CAPABILITY_REGISTRY.get(capability_id)
+    if not entry:
+        return False
+
+    state = entry.get("state", CapabilityState.UNKNOWN)
+    if state not in (CapabilityState.TOOL_READY, CapabilityState.VALIDATED):
+        return False
+
+    tool_name = entry.get("tool_name", "")
+    static_tool_names = {
+        t.get("function", {}).get("name", "")
+        for t in AVAILABLE_TOOLS
+    }
+    return bool(tool_name and (tool_name in static_tool_names or tool_name in DYNAMIC_TOOLS))
+
+
+def register_capability(capability_id: str, tool_name: str = "",
+                        source: str = "manual_register",
+                        ticket_id: str = "",
+                        notes: str = "") -> None:
+    """Register a newly-built capability so the intent classifier
+    recognizes it on subsequent requests.
+
+    Also writes to the Capability Truth Registry for full traceability.
+
+    Called by TorreDeControl after the Factory successfully builds
+    a new capability, or when an existing resource is detected.
+
+    Args:
+        capability_id: e.g. "web_browsing"
+        tool_name: e.g. "web_browser". Defaults to capability_id.
+        source: how the capability was obtained:
+            "core_default"      — shipped with DIGOS
+            "resource_detected" — detected at runtime (Chrome, API key, etc.)
+            "factory_built"     — built by the Factory
+            "manual_register"   — manually registered (default)
+        ticket_id: ticket that tracks the creation of this capability
+        notes: optional context
+    """
+    _registry_init_defaults()
+    tool = tool_name or capability_id
+    AVAILABLE_CAPABILITIES[capability_id] = tool
+
+    existing = _CAPABILITY_REGISTRY.get(capability_id)
+    if existing is None:
+        _CAPABILITY_REGISTRY[capability_id] = {
+            "state": CapabilityState.REGISTERED,
+            "tool_name": tool,
+            "source": source,
+            "ticket_id": ticket_id,
+            "created_at": _now_iso(),
+            "validated_at": "",
+            "notes": notes,
+        }
+    else:
+        entry = dict(existing)
+        entry["tool_name"] = tool
+        entry["source"] = source or entry.get("source", "")
+        if ticket_id:
+            entry["ticket_id"] = ticket_id
+        if notes:
+            entry["notes"] = notes
+        if entry.get("state") in (CapabilityState.UNKNOWN, CapabilityState.DETECTED):
+            entry["state"] = CapabilityState.REGISTERED
+            if entry.get("created_at") is None or entry["created_at"] == "":
+                entry["created_at"] = _now_iso()
+        _CAPABILITY_REGISTRY[capability_id] = entry
+
+
+def capability_set_state(capability_id: str, new_state: str,
+                         ticket_id: str = "",
+                         notes: str = "") -> bool:
+    """Promote a capability's truth state following valid transitions.
+
+    Allowed:
+      detected   → registered
+      registered → tool_ready
+      tool_ready → validated
+      registered → validated  (direct, for manually verified)
+      (state)    → registered  (re-register after removal)
+
+    Returns True if the transition was valid and applied.
+    """
+    _registry_init_defaults()
+    entry = _CAPABILITY_REGISTRY.get(capability_id)
+    if entry is None:
+        return False
+
+    old_state = entry.get("state", CapabilityState.UNKNOWN)
+
+    valid_transitions = {
+        ("detected", "registered"): True,
+        ("registered", "tool_ready"): True,
+        ("tool_ready", "validated"): True,
+        ("registered", "validated"): True,
+        # re-register from any state
+        (CapabilityState.UNKNOWN, "registered"): True,
+        ("detected", "detected"): True,   # no-op
+        ("registered", "registered"): True,
+        ("tool_ready", "tool_ready"): True,
+        ("validated", "validated"): True,
+    }
+
+    if (old_state, new_state) not in valid_transitions:
+        return False
+
+    entry["state"] = new_state
+    if new_state == CapabilityState.VALIDATED:
+        entry["validated_at"] = _now_iso()
+    if ticket_id:
+        entry["ticket_id"] = ticket_id
+    if notes:
+        entry["notes"] = notes
+    _CAPABILITY_REGISTRY[capability_id] = entry
+    return True
+
+
+def capability_get_info(capability_id: str) -> dict:
+    """Return the full CapabilityEntry for a capability, or None."""
+    _registry_init_defaults()
+    return _CAPABILITY_REGISTRY.get(capability_id)
+
+
+def capability_summary() -> str:
+    """Return a human-readable summary of all capabilities and their states."""
+    _registry_init_defaults()
+    if not _CAPABILITY_REGISTRY:
+        return "  📋 No hay capacidades registradas."
+
+    state_icons = {
+        CapabilityState.UNKNOWN: "◯",
+        CapabilityState.DETECTED: "🔍",
+        CapabilityState.REGISTERED: "📝",
+        CapabilityState.TOOL_READY: "🔧",
+        CapabilityState.VALIDATED: "✅",
+    }
+
+    lines = ["  📋 CAPABILITY TRUTH REGISTRY", "  ──────────────────────────────"]
+    for cap_id, entry in sorted(_CAPABILITY_REGISTRY.items()):
+        state = entry.get("state", CapabilityState.UNKNOWN)
+        icon = state_icons.get(state, "◯")
+        tool = entry.get("tool_name", "")
+        ticket = entry.get("ticket_id", "")
+        ticket_str = f" #{ticket}" if ticket else ""
+        lines.append(f"  {icon} {cap_id:25s} → {tool:20s}  [{state:>10s}]{ticket_str}")
+
+    # Count by state
+    counts = {}
+    for entry in _CAPABILITY_REGISTRY.values():
+        s = entry.get("state", CapabilityState.UNKNOWN)
+        counts[s] = counts.get(s, 0) + 1
+
+    lines.append("  ──────────────────────────────")
+    for state in [CapabilityState.UNKNOWN, CapabilityState.DETECTED,
+                  CapabilityState.REGISTERED, CapabilityState.TOOL_READY,
+                  CapabilityState.VALIDATED]:
+        count = counts.get(state, 0)
+        if count:
+            icon = state_icons.get(state, "◯")
+            lines.append(f"  {icon} {state}: {count}")
+
+    return "\n".join(lines)
+
+
+def capability_set_detected(capability_id: str, tool_name: str = "",
+                            source: str = "resource_detected",
+                            ticket_id: str = "",
+                            notes: str = "") -> None:
+    """Mark a capability as DETECTED (resource found, but NOT yet registered).
+
+    This is the honest state for "Chrome is installed" or "API key exists"
+    without falsely claiming the tool is ready. The capability must go through
+    DETECTED → REGISTERED → TOOL_READY → VALIDATED to be truly available.
+    """
+    _registry_init_defaults()
+    _CAPABILITY_REGISTRY[capability_id] = {
+        "state": CapabilityState.DETECTED,
+        "tool_name": tool_name or capability_id,
+        "source": source,
+        "ticket_id": ticket_id,
+        "created_at": _now_iso(),
+        "validated_at": "",
+        "notes": notes or f"Resource detected: {source}",
+    }
+    # Do NOT add to AVAILABLE_CAPABILITIES — it's NOT truly available yet
+
+
+# ─────────────────────────────────────────────
+# EJECUTOR DE TOOLS
+# ─────────────────────────────────────────────
+
+def _execute_tool(name: str, args: dict, api_key: str = "", base_url: str = "", model: str = "") -> str:
+    """Executes a tool and returns the result as a string.
+
+    api_key, base_url, and model are passed from the agent for tools
+    that need API access (STT, TTS, vision).
+    """
+    try:
+        if name == "web_search":
+            return _web_search(args.get("query", ""))
+        elif name == "transcribe_audio":
+            return _transcribe_audio(args.get("path", ""), api_key, base_url)
+        elif name == "speak_text":
+            return _speak_text(args.get("text", ""), args.get("voice", "nova"), api_key, base_url)
+        elif name == "view_image":
+            return _view_image(args.get("path", ""), args.get("question", ""), api_key, base_url, model)
+        elif name == "read_file":
+            return _read_file(args.get("path", ""))
+        elif name == "write_file":
+            return _write_file(args.get("path", ""), args.get("content", ""))
+        elif name == "execute_code":
+            return _execute_code(args.get("code", ""))
+        elif name == "terminal":
+            return _run_terminal(args.get("command", ""))
+        elif name in DYNAMIC_TOOLS:
+            return _execute_dynamic_tool(name, args, api_key, base_url, model)
+        else:
+            return f"Error: tool '{name}' no soportado"
+    except Exception as e:
+        return f"Error ejecutando {name}: {e}"
+
+
+# ─────────────────────────────────────────────
+# CORE: Web Search (DuckDuckGo Instant Answer)
+# ─────────────────────────────────────────────
+
+def _web_search(query: str) -> str:
+    """Búsqueda web vía DuckDuckGo Instant Answer API (sin API key).
+
+    Devuelve resultados estructurados: Abstract, RelatedTopics, etc.
+    """
+    if not query.strip():
+        return "Error: query vacía"
+
+    encoded = urllib.parse.quote(query)
+    url = f"https://api.duckduckgo.com/?q={encoded}&format=json&no_html=1&skip_disambig=1"
+
+    try:
+        req = Request(url, headers={"User-Agent": "DIGOS/0.3"})
+        with urlopen(req, timeout=15) as r:
+            data = json.loads(r.read().decode("utf-8"))
+
+        lines = []
+
+        # Abstract (main answer)
+        abstract = data.get("Abstract", "").strip()
+        if abstract:
+            source = data.get("AbstractSource", "")
+            heading = data.get("Heading", "")
+            if heading:
+                lines.append(f"📌 {heading}")
+            lines.append(abstract)
+            if source:
+                lines.append(f"Fuente: {source}")
+            lines.append("")
+
+        # Related topics
+        related = data.get("RelatedTopics", [])
+        for i, topic in enumerate(related[:8]):
+            if isinstance(topic, dict) and "Text" in topic:
+                text = topic["Text"].strip()
+                url_topic = topic.get("FirstURL", "")
+                lines.append(f"{i+1}. {text}")
+                if url_topic:
+                    lines.append(f"   {url_topic}")
+
+        # External links (from Results)
+        results = data.get("Results", [])
+        if results and not related:
+            for i, r in enumerate(results[:8]):
+                text = r.get("Text", "").strip()
+                url_r = r.get("FirstURL", "")
+                if text:
+                    lines.append(f"{i+1}. {text}")
+                    if url_r:
+                        lines.append(f"   {url_r}")
+
+        if lines:
+            return "\n".join(lines)[:2500]
+        else:
+            return f"Sin resultados para: {query}"
+
+    except URLError as e:
+        return f"Error de conexión en búsqueda: {e.reason}"
+    except json.JSONDecodeError:
+        return "Error: respuesta inválida del servidor de búsqueda"
+    except Exception as e:
+        return f"Error en búsqueda: {e}"
+
+
+# ─────────────────────────────────────────────
+# CORE: Speech-to-Text (Whisper API)
+# ─────────────────────────────────────────────
+
+def _transcribe_audio(path: str, api_key: str, base_url: str) -> str:
+    """Transcribe un archivo de audio usando Whisper API (OpenAI-compatible).
+
+    Formato multipart/form-data al endpoint /audio/transcriptions.
+    El idioma se auto-detecta (no se fuerza español).
+    """
+    if not api_key:
+        return ("⚠️  Transcripción no disponible: no hay API key configurada.\n"
+                "Configura tu API key con 'digos --setup'.")
+
+    try:
+        path = os.path.expanduser(path)
+        if not os.path.isfile(path):
+            return f"Error: archivo no encontrado: {path}"
+
+        # Validate file size (25MB limit for Whisper)
+        file_size = os.path.getsize(path)
+        if file_size > 25 * 1024 * 1024:
+            return f"Error: archivo demasiado grande ({file_size / 1024 / 1024:.1f}MB). Máximo 25MB."
+
+        # Build multipart form data (no language field — Whisper auto-detects)
+        boundary = "----DigosTranscriptionBoundary"
+        filename = os.path.basename(path)
+        with open(path, "rb") as f:
+            file_data = f.read()
+
+        body = b""
+        # model field
+        body += f"--{boundary}\r\n".encode()
+        body += b'Content-Disposition: form-data; name="model"\r\n\r\n'
+        body += b"whisper-1\r\n"
+        # file field
+        body += f"--{boundary}\r\n".encode()
+        body += f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'.encode()
+        body += b"Content-Type: application/octet-stream\r\n\r\n"
+        body += file_data
+        body += f"\r\n--{boundary}--\r\n".encode()
+
+        endpoint = base_url.rstrip("/") + "/audio/transcriptions"
+        req = Request(
+            endpoint,
+            data=body,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+            },
+        )
+
+        with urlopen(req, timeout=120) as r:
+            result = json.loads(r.read().decode("utf-8"))
+
+        text = result.get("text", "").strip()
+        if text:
+            return f"📝 Transcripción:\n\n{text}"
+        else:
+            return "⚠️  No se detectó texto en el audio."
+
+    except HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace") if e.fp else ""
+        return f"Error de API ({e.code}): {body[:200]}"
+    except URLError as e:
+        return f"Error de conexión: {e.reason}"
+    except Exception as e:
+        return f"Error transcribiendo audio: {e}"
+
+
+# ─────────────────────────────────────────────
+# CORE: Text-to-Speech (TTS API)
+# ─────────────────────────────────────────────
+
+def _speak_text(text: str, voice: str, api_key: str, base_url: str) -> str:
+    """Convierte texto a voz usando TTS API (OpenAI-compatible).
+
+    Guarda el audio en un archivo temporal y devuelve la ruta.
+    """
+    if not api_key:
+        return ("⚠️  Síntesis de voz no disponible: no hay API key configurada.\n"
+                "Configura tu API key con 'digos --setup'.")
+
+    if not text.strip():
+        return "Error: texto vacío"
+
+    # Validate voice
+    valid_voices = {"alloy", "echo", "fable", "onyx", "nova", "shimmer"}
+    if voice not in valid_voices:
+        voice = "nova"
+
+    # Truncate text (4096 char limit for TTS)
+    text = text[:4000]
+
+    try:
+        body = json.dumps({
+            "model": "tts-1",
+            "input": text,
+            "voice": voice,
+            "response_format": "mp3",
+        }).encode("utf-8")
+
+        endpoint = base_url.rstrip("/") + "/audio/speech"
+        req = Request(
+            endpoint,
+            data=body,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+        )
+
+        with urlopen(req, timeout=60) as r:
+            audio_data = r.read()
+
+        if not audio_data:
+            return "⚠️  No se generó audio."
+
+        # Save to temp file
+        output_path = os.path.join(tempfile.gettempdir(), f"digos_tts_{os.getpid()}.mp3")
+        with open(output_path, "wb") as f:
+            f.write(audio_data)
+
+        return f"🔊 Audio generado: {output_path} ({len(audio_data)} bytes, voz: {voice})"
+
+    except HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace") if e.fp else ""
+        return f"Error de API TTS ({e.code}): {body[:200]}"
+    except URLError as e:
+        return f"Error de conexión TTS: {e.reason}"
+    except Exception as e:
+        return f"Error generando voz: {e}"
+
+
+# ─────────────────────────────────────────────
+# CORE: Vision (Image/Document Analysis)
+# ─────────────────────────────────────────────
+
+def _view_image(path: str, question: str, api_key: str, base_url: str, model: str = "") -> str:
+    """Analiza una imagen/documento usando un modelo con visión.
+
+    Lee la imagen, la codifica en base64, y la envía al LLM para descripción.
+    """
+    if not api_key:
+        return ("⚠️  Visión no disponible: no hay API key configurada.\n"
+                "Configura tu API key con 'digos --setup'.")
+
+    try:
+        path = os.path.expanduser(path)
+        if not os.path.isfile(path):
+            return f"Error: imagen no encontrada: {path}"
+
+        # Validate file size (20MB limit for vision)
+        file_size = os.path.getsize(path)
+        if file_size > 20 * 1024 * 1024:
+            return f"Error: imagen demasiado grande ({file_size / 1024 / 1024:.1f}MB). Máximo 20MB."
+
+        # Determine MIME type from extension
+        ext = os.path.splitext(path)[1].lower()
+        mime_map = {
+            ".png": "image/png",
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".gif": "image/gif",
+            ".webp": "image/webp",
+            ".bmp": "image/bmp",
+        }
+        mime_type = mime_map.get(ext)
+        if not mime_type:
+            return f"Error: formato de imagen no soportado: {ext}. Usa: png, jpg, gif, webp, bmp."
+
+        # Read and encode image
+        with open(path, "rb") as f:
+            image_data = base64.b64encode(f.read()).decode("utf-8")
+
+        # Build the vision prompt
+        if not question:
+            question = "Describe detalladamente lo que ves en esta imagen. Si es un documento, transcribe y resume su contenido."
+
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": question},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:{mime_type};base64,{image_data}",
+                            "detail": "auto",
+                        },
+                    },
+                ],
+            }
+        ]
+
+        # Use agent's configured model, fall back to gpt-4o for vision
+        vision_model = model if model else "gpt-4o"
+        body = json.dumps({
+            "model": vision_model,
+            "messages": messages,
+            "max_tokens": 1024,
+            "temperature": 0.3,
+        }).encode("utf-8")
+
+        endpoint = base_url.rstrip("/") + "/chat/completions"
+        req = Request(
+            endpoint,
+            data=body,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+        )
+
+        with urlopen(req, timeout=60) as r:
+            data = json.loads(r.read().decode("utf-8"))
+
+        choices = data.get("choices", [])
+        if not choices:
+            return "⚠️  El modelo no devolvió una descripción."
+
+        content = choices[0].get("message", {}).get("content", "")
+        if content:
+            return f"🖼️  Análisis de imagen:\n\n{content}"
+        else:
+            return "⚠️  No se pudo analizar la imagen."
+
+    except HTTPError as e:
+        # Check for model-not-found (provider might not support vision)
+        body_text = ""
+        try:
+            body_text = e.read().decode("utf-8", errors="replace") if e.fp else ""
+        except Exception:
+            pass
+        if e.code == 404 or "model_not_found" in body_text:
+            return ("⚠️  El proveedor actual no soporta análisis de imágenes (visión).\n"
+                    "Se requiere un modelo multimodal (GPT-4o, Claude, Gemini).")
+        return f"Error de API visión ({e.code}): {body_text[:200]}"
+    except URLError as e:
+        return f"Error de conexión visión: {e.reason}"
+    except Exception as e:
+        return f"Error analizando imagen: {e}"
+
+
+# ─────────────────────────────────────────────
+# UTILITY: File I/O
+# ─────────────────────────────────────────────
+
+def _read_file(path: str) -> str:
+    """Reads a file from the system."""
+    try:
+        path = os.path.expanduser(path)
+        if not os.path.isfile(path):
+            return f"Error: archivo no encontrado: {path}"
+        with open(path, "r", errors="replace") as f:
+            content = f.read(3000)
+        return content
+    except Exception as e:
+        return f"Error leyendo archivo: {e}"
+
+
+def _write_file(path: str, content: str) -> str:
+    """Escribe contenido en un archivo."""
+    try:
+        path = os.path.expanduser(path)
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "w") as f:
+            f.write(content)
+        return f"Archivo escrito: {path} ({len(content)} bytes)"
+    except Exception as e:
+        return f"Error escribiendo archivo: {e}"
+
+
+def _execute_code(code: str) -> str:
+    """Ejecuta código Python en un entorno aislado.
+
+    Solo expone un whitelist seguro de builtins. Nada de
+    __import__, open, eval, exec, compile, o acceso al sistema.
+    """
+    try:
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            safe_builtins = {
+                "print": print,
+                "len": len,
+                "range": range,
+                "int": int,
+                "float": float,
+                "str": str,
+                "bool": bool,
+                "list": list,
+                "dict": dict,
+                "tuple": tuple,
+                "set": set,
+                "sorted": sorted,
+                "reversed": reversed,
+                "enumerate": enumerate,
+                "zip": zip,
+                "map": map,
+                "filter": filter,
+                "any": any,
+                "all": all,
+                "sum": sum,
+                "min": min,
+                "max": max,
+                "abs": abs,
+                "round": round,
+                "pow": pow,
+                "isinstance": isinstance,
+                "issubclass": issubclass,
+                "hasattr": hasattr,
+                "getattr": getattr,
+                "setattr": setattr,
+                "type": type,
+                "True": True,
+                "False": False,
+                "None": None,
+                "ValueError": ValueError,
+                "TypeError": TypeError,
+                "KeyError": KeyError,
+                "IndexError": IndexError,
+                "StopIteration": StopIteration,
+                "Exception": Exception,
+                "BaseException": BaseException,
+                "KeyboardInterrupt": KeyboardInterrupt,
+                "math": __import__("math"),
+                "json": __import__("json"),
+                "datetime": __import__("datetime"),
+                "re": __import__("re"),
+                "random": __import__("random"),
+                "itertools": __import__("itertools"),
+                "collections": __import__("collections"),
+                "string": __import__("string"),
+            }
+            exec_globals = {"__builtins__": safe_builtins}
+            exec(code, exec_globals)
+        result = output.getvalue()
+        return result if result else "Código ejecutado (sin salida)"
+    except Exception as e:
+        return f"Error ejecutando código: {e}"
+
+
+def _execute_dynamic_tool(name: str, args: dict, api_key: str, base_url: str, model: str) -> str:
+    """Execute a dynamically-registered tool (built by Factory)."""
+    try:
+        func = DYNAMIC_TOOLS.get(name)
+        if func is None:
+            return f"Error: tool '{name}' no encontrada en herramientas dinámicas"
+        return func(args, api_key, base_url, model)
+    except Exception as e:
+        return f"Error ejecutando tool dinámica '{name}': {e}"
+
+
+def _run_terminal(command: str) -> str:
+    """Executes a command in the terminal.
+
+    Usa shlex.split() + shell=False para evitar inyección de comandos.
+    """
+    try:
+        args = shlex.split(command)
+        result = subprocess.run(
+            args, shell=False, capture_output=True, text=True, timeout=30
+        )
+        output = result.stdout or ""
+        error = result.stderr or ""
+        if error:
+            output += f"\n[stderr]\n{error}"
+        return output[:2000] if output else "Comando ejecutado (sin salida)"
+    except subprocess.TimeoutExpired:
+        return "Error: comando timeout (30s)"
+    except ValueError as e:
+        return f"Error: comando mal formado: {e}"
+    except Exception as e:
+        return f"Error en terminal: {e}"

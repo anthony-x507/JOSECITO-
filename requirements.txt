@@ -1,0 +1,5 @@
+# MASTER - Organized Home for Useful Intelligence
+# Core dependencies
+
+# Testing
+pytest>=7.0.0

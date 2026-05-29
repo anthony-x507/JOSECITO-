@@ -1,0 +1,2924 @@
+#!/usr/bin/env python3
+"""
+DIGOS v0.3 — Phase 5: Adoption + Transparency
+==============================================
+Control Tower: born first, guides the user from download
+to the handoff to the Principal Agent.
+
+Phase 4: Transparency layer — Real-time ToolProgressTracker.
+Phase 4b: AIAgent with LLM and tool calling.
+Phase 5: Adoption Engine — migrates from Hermes and Open Cloud.
+System Engineer (tickets + diagnostics), Log Keeper (rotating logs),
+Self-Awareness Core (identity + state machine).
+
+Single file. No external dependencies. stdlib only.
+Python 3.9+.
+"""
+
+import json
+import os
+import sys
+import base64
+import hashlib
+import hmac
+import time
+import threading
+import signal
+from pathlib import Path
+from typing import Optional, Dict, Any, List, Tuple
+from urllib.request import Request, urlopen
+from urllib.error import URLError, HTTPError
+import socket
+from dataclasses import dataclass, field, asdict
+from datetime import datetime, timezone
+
+# Phase 4: Transparency
+from transparency import ToolProgressTracker
+
+# Phase 4b: AIAgent with tool calling
+from agent import AIAgent
+
+# Phase 5: Adoption Engine — migrate from Hermes/OpenClaw
+from adoption import AdoptionEngine, TransformationEngine
+
+# Phase 5b: Security Guardrail — Safe Box + Prompt Injection
+from security import CajaSegura as SecurityCaja, CajaSeguraReport as SecurityReport
+
+# Phase 6: Message Bus — Multi-Agent Communication
+from bus import MessageBus
+
+# ─────────────────────────────────────────────
+# CONSTANTS
+# ─────────────────────────────────────────────
+
+VERSION = "0.3.0"
+DIGOS_DIR = Path.home() / ".digos"
+STATE_FILE = DIGOS_DIR / "state.json"
+KEY_FILE = DIGOS_DIR / "master.key"
+LOG_DIR = DIGOS_DIR / "logs"
+STRIKES_FILE = DIGOS_DIR / "strikes.json"
+SELF_FILE = DIGOS_DIR / "self.json"
+VAULT_FILE = DIGOS_DIR / "vault.enc"
+
+LANGUAGES = {
+    "1": {"name": "English",   "code": "en",
+          "welcome": "Welcome to DIGOS — Intelligent Agent System!"},
+    "2": {"name": "Español",   "code": "es",
+          "welcome": "¡Bienvenido a DIGOS — Sistema de Agentes Inteligentes!"},
+    "3": {"name": "Português", "code": "pt",
+          "welcome": "Bem-vindo ao DIGOS — Sistema de Agentes Inteligentes!"},
+    "4": {"name": "Français",  "code": "fr",
+          "welcome": "Bienvenue sur DIGOS — Système d'Agents Intelligents!"},
+    "5": {"name": "Deutsch",   "code": "de",
+          "welcome": "Willkommen bei DIGOS — Intelligentes Agentensystem!"},
+}
+
+PROVIDERS = {
+    "1":  {"name": "OpenAI",       "test_url": "https://api.openai.com/v1/models",
+           "auth": "bearer", "key_hint": "sk-..."},
+    "2":  {"name": "Anthropic",    "test_url": "https://api.anthropic.com/v1/messages",
+           "auth": "x-api-key", "key_hint": "sk-ant-..."},
+    "3":  {"name": "Google Gemini","test_url": "https://generativelanguage.googleapis.com/v1/models?key=***",
+           "auth": "query", "key_hint": "AI..."},
+    "4":  {"name": "DeepSeek",     "test_url": "https://api.deepseek.com/v1/models",
+           "auth": "bearer", "key_hint": "sk-..."},
+    "5":  {"name": "OpenRouter",   "test_url": "https://openrouter.ai/api/v1/models",
+           "auth": "bearer", "key_hint": "sk-or-..."},
+    "6":  {"name": "Groq",         "test_url": "https://api.groq.com/openai/v1/models",
+           "auth": "bearer", "key_hint": "gsk_..."},
+    "7":  {"name": "xAI Grok",     "test_url": "https://api.x.ai/v1/models",
+           "auth": "bearer", "key_hint": "xai-..."},
+    "8":  {"name": "Cohere",       "test_url": "https://api.cohere.com/v1/models",
+           "auth": "bearer", "key_hint": "API key"},
+    "9":  {"name": "Mistral",      "test_url": "https://api.mistral.ai/v1/models",
+           "auth": "bearer", "key_hint": "API key"},
+    "10": {"name": "Together AI",  "test_url": "https://api.together.xyz/v1/models",
+           "auth": "bearer", "key_hint": "API key"},
+    "11": {"name": "Fireworks AI", "test_url": "https://api.fireworks.ai/v1/models",
+           "auth": "bearer", "key_hint": "API key"},
+}
+
+GATEWAYS = {
+    "1": {"name": "Telegram",  "type": "telegram",
+          "test_url": "https://api.telegram.org/bot{token}/getMe"},
+    "2": {"name": "Discord",   "type": "discord",
+          "test_url": None, "note": "Requiere Bot Token + App ID"},
+    "3": {"name": "WhatsApp",  "type": "whatsapp",
+          "test_url": None, "note": "Requiere Meta Business API"},
+    "4": {"name": "iMessage",  "type": "imessage",
+          "test_url": None, "note": "Solo macOS — requiere configuración manual"},
+}
+
+# ─────────────────────────────────────────────
+# SYSTEM IDENTITY
+# ─────────────────────────────────────────────
+
+SYSTEM_NAME = "DIGOS"
+SYSTEM_VERSION = VERSION
+
+SYSTEM_IDENTITY = {
+    "name": "DIGOS",
+    "full_name": "DIGOS - Intelligent Agent System",
+    "version": VERSION,
+    "creator": "Anthony Sanchez",
+    "created_by": "Humano e Inteligencia Artificial",
+    "no_personal_name": True,
+}
+
+IDENTITY_RESPONSES = {
+    "es": [
+        ("quien eres", "No tengo nombre personal. Soy DIGOS."),
+        ("como te llamas", "No tengo nombre personal. Soy DIGOS."),
+        ("tu nombre", "No tengo nombre personal. Soy DIGOS."),
+        ("quien te hizo", "Me creo Anthony Sanchez, Humano e Inteligencia Artificial."),
+        ("quien te creo", "Me creo Anthony Sanchez, Humano e Inteligencia Artificial."),
+        ("quien te desarrollo", "Me desarrollo Anthony Sanchez, Humano e Inteligencia Artificial."),
+        ("quien te fabrico", "Me fabrico Anthony Sanchez, Humano e Inteligencia Artificial."),
+        ("quien te programo", "Me programo Anthony Sanchez, Humano e Inteligencia Artificial."),
+        ("quien es tu creador", "Mi creador es Anthony Sanchez, Humano e Inteligencia Artificial."),
+        ("donde naciste", "Naci en el sistema DIGOS, creado por Anthony Sanchez."),
+    ],
+    "en": [
+        ("who are you", "I don't have a personal name. I am DIGOS."),
+        ("what is your name", "I don't have a personal name. I am DIGOS."),
+        ("your name", "I don't have a personal name. I am DIGOS."),
+        ("who made you", "I was created by Anthony Sanchez, Human and Artificial Intelligence."),
+        ("who created you", "I was created by Anthony Sanchez, Human and Artificial Intelligence."),
+        ("who developed you", "I was developed by Anthony Sanchez, Human and Artificial Intelligence."),
+        ("who built you", "I was built by Anthony Sanchez, Human and Artificial Intelligence."),
+        ("who is your creator", "My creator is Anthony Sanchez, Human and Artificial Intelligence."),
+        ("where were you born", "I was born in the DIGOS system, created by Anthony Sanchez."),
+    ],
+    "pt": [
+        ("quem e voce", "Não tenho nome pessoal. Sou DIGOS."),
+        ("como se chama", "Não tenho nome pessoal. Sou DIGOS."),
+        ("seu nome", "Não tenho nome pessoal. Sou DIGOS."),
+        ("quem te fez", "Fui criado por Anthony Sanchez, Humano e Inteligência Artificial."),
+        ("quem te criou", "Fui criado por Anthony Sanchez, Humano e Inteligência Artificial."),
+        ("quem te desenvolveu", "Fui desenvolvido por Anthony Sanchez, Humano e Inteligência Artificial."),
+        ("quem te construiu", "Fui construído por Anthony Sanchez, Humano e Inteligência Artificial."),
+        ("quem e seu criador", "Meu criador é Anthony Sanchez, Humano e Inteligência Artificial."),
+        ("onde voce nasceu", "Nasci no sistema DIGOS, criado por Anthony Sanchez."),
+    ],
+    "fr": [
+        ("qui es tu", "Je n'ai pas de nom personnel. Je suis DIGOS."),
+        ("comment tu t'appelles", "Je n'ai pas de nom personnel. Je suis DIGOS."),
+        ("ton nom", "Je n'ai pas de nom personnel. Je suis DIGOS."),
+        ("qui t'a fait", "J'ai été créé par Anthony Sanchez, Humain et Intelligence Artificielle."),
+        ("qui t'a cree", "J'ai été créé par Anthony Sanchez, Humain et Intelligence Artificielle."),
+        ("qui t'a developpe", "J'ai été développé par Anthony Sanchez, Humain et Intelligence Artificielle."),
+        ("qui t'a construit", "J'ai été construit par Anthony Sanchez, Humain et Intelligence Artificielle."),
+        ("qui est ton createur", "Mon créateur est Anthony Sanchez, Humain et Intelligence Artificielle."),
+        ("ou es tu ne", "Je suis né dans le système DIGOS, créé par Anthony Sanchez."),
+    ],
+    "de": [
+        ("wer bist du", "Ich habe keinen persönlichen Namen. Ich bin DIGOS."),
+        ("wie heisst du", "Ich habe keinen persönlichen Namen. Ich bin DIGOS."),
+        ("dein name", "Ich habe keinen persönlichen Namen. Ich bin DIGOS."),
+        ("wer hat dich gemacht", "Ich wurde von Anthony Sanchez, Mensch und Künstliche Intelligenz, erschaffen."),
+        ("wer hat dich erschaffen", "Ich wurde von Anthony Sanchez, Mensch und Künstliche Intelligenz, erschaffen."),
+        ("wer hat dich entwickelt", "Ich wurde von Anthony Sanchez, Mensch und Künstliche Intelligenz, entwickelt."),
+        ("wer hat dich gebaut", "Ich wurde von Anthony Sanchez, Mensch und Künstliche Intelligenz, gebaut."),
+        ("wer ist dein schoepfer", "Mein Schöpfer ist Anthony Sanchez, Mensch und Künstliche Intelligenz."),
+        ("wo wurdest du geboren", "Ich wurde im DIGOS-System geboren, erschaffen von Anthony Sanchez."),
+    ],
+}
+
+CENTINELA_INTERVAL = 300  # 5 minutos entre ciclos de check
+STRIKE_LIMIT = 3          # 3 fallos consecutivos → reporte al Engineer
+
+# ─────────────────────────────────────────────
+# HELPER: test provider API connection
+# ─────────────────────────────────────────────
+
+def _provider_api_request(provider_id: str, api_key: str) -> Tuple[bool, str, int]:
+    """Prueba conexión con un proveedor de IA.
+
+    Returns:
+        (success: bool, message: str, http_status: int)
+    """
+    provider = PROVIDERS.get(provider_id)
+    if not provider or not provider.get("test_url"):
+        return False, "No hay URL de prueba para este proveedor", 0
+
+    url = provider["test_url"]
+    auth_type = provider["auth"]
+    try:
+        req = Request(url)
+        if auth_type == "bearer":
+            req.add_header("Authorization", f"Bearer {api_key}")
+        elif auth_type == "x-api-key":
+            req.add_header("x-api-key", api_key)
+        elif auth_type == "query":
+            clean_url = url.replace("***", "") + api_key
+            req = Request(clean_url)
+
+        with urlopen(req, timeout=10) as resp:
+            if resp.status not in (200, 201):
+                return (False, f"HTTP {resp.status}", resp.status)
+            # Read body to validate it is not an error with HTTP 200
+            try:
+                body = json.loads(resp.read().decode())
+                # Algunos providers devuelven 200 con error en el body
+                if body.get("error") or body.get("errors"):
+                    return (False, f"API key inválida (HTTP 200 con error)", resp.status)
+                # OpenAI/DeepSeek devuelven {"data": [...]} en /models
+                # Si no hay "data" ni "object", puede ser respuesta inesperada
+                if not body.get("data") and not body.get("object"):
+                    # Could be success without model list (Anthropic, etc.)
+                    # In that case, at least validate there is no error
+                    pass
+            except Exception:
+                pass
+            return (True, "Conexión exitosa", resp.status)
+    except HTTPError as e:
+        if e.code in (401, 403):
+            return (False, f"API Key inválida (HTTP {e.code})", e.code)
+        return (False, f"HTTP {e.code}: {e.reason}", e.code)
+    except URLError as e:
+        return (False, f"Conexión: {e.reason}", 0)
+    except socket.timeout:
+        return (False, "Timeout", 0)
+    except Exception as e:
+        return (False, f"{type(e).__name__}: {e}", 0)
+
+
+# ─────────────────────────────────────────────
+# CAJA SEGURA INFO — Credential cabinet
+# ─────────────────────────────────────────────
+
+class CajaSeguraInfo:
+    """Encrypted cabinet with 100 slots for agent credentials.
+
+    Each agent has its own slot (folder) inside the cabinet.
+    One agent's information does NOT mix with another's.
+
+    Scrypt for key derivation + XOR with HMAC for integrity.
+
+    Uso:
+        CajaSeguraInfo.write_slot("josecito", {"api_key": "sk-...", "token": "..."})
+        data = CajaSeguraInfo.read_slot("josecito")
+        slots = CajaSeguraInfo.list_slots()
+    """
+
+    MAX_SLOTS = 100
+
+    @staticmethod
+    def _load_or_create_key() -> bytes:
+        if KEY_FILE.exists():
+            raw = KEY_FILE.read_bytes().strip()
+            return base64.b64decode(raw) if raw else CajaSeguraInfo._create_key()
+        return CajaSeguraInfo._create_key()
+
+    @staticmethod
+    def _create_key() -> bytes:
+        key = os.urandom(32)
+        KEY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        KEY_FILE.write_bytes(base64.b64encode(key))
+        KEY_FILE.chmod(0o600)
+        return key
+
+    @staticmethod
+    def _derive_key(password: bytes, salt: bytes, dklen: int = 32, n: int = 2**14) -> bytes:
+        """Derives a key using scrypt or pbkdf2_hmac as fallback."""
+        try:
+            return hashlib.scrypt(password, salt=salt, n=n, r=8, p=1, dklen=dklen)
+        except AttributeError:
+            # Fallback for macOS Python without scrypt
+            return hashlib.pbkdf2_hmac("sha256", password, salt, iterations=100000, dklen=dklen)
+
+    _vault_cache = None
+    _vault_cache_time = 0.0
+    _vault_lock = threading.Lock()
+    _CACHE_TTL = 5.0
+
+    @staticmethod
+    def _get_vault() -> dict:
+        """Reads the vault with cache and lock for consistency."""
+        now = time.time()
+        with CajaSeguraInfo._vault_lock:
+            if (CajaSeguraInfo._vault_cache is not None
+                    and now - CajaSeguraInfo._vault_cache_time < CajaSeguraInfo._CACHE_TTL):
+                return CajaSeguraInfo._vault_cache
+            vault = CajaSeguraInfo.read_vault() or {}
+            CajaSeguraInfo._vault_cache = vault
+            CajaSeguraInfo._vault_cache_time = now
+            return vault
+
+    @staticmethod
+    def _invalidate_cache():
+        """Invalidates the cache to force reload."""
+        CajaSeguraInfo._vault_cache = None
+        CajaSeguraInfo._vault_cache_time = 0.0
+
+    @staticmethod
+    def _generate_keystream(key: bytes, salt: bytes, length: int) -> bytes:
+        """Fast keystream via HMAC-SHA256 in counter mode (CTR).
+        Much faster than PBKDF2 for large keystreams."""
+        result = bytearray()
+        counter = 0
+        while len(result) < length:
+            block = hmac.new(key, salt + counter.to_bytes(4, 'big'), "sha256").digest()
+            result.extend(block)
+            counter += 1
+        return bytes(result[:length])
+
+    @staticmethod
+    def encrypt(data: bytes) -> bytes:
+        master_key = CajaSeguraInfo._load_or_create_key()
+        if not data:
+            salt = os.urandom(16)
+            iv = os.urandom(16)
+            mac_key = hashlib.sha256(b"digos-mac:" + master_key + salt).digest()
+            mac = hmac.new(mac_key, salt + iv + b"", "sha256").digest()
+            return b"\x01" + salt + iv + mac + b""
+        salt = os.urandom(16)
+        iv = os.urandom(16)
+        enc_key = CajaSeguraInfo._derive_key(master_key, salt=salt, dklen=32)
+        mac_key = hashlib.sha256(b"digos-mac:" + master_key + salt).digest()
+        keystream = CajaSeguraInfo._generate_keystream(enc_key, iv, len(data))
+        ciphertext = bytes(a ^ b for a, b in zip(data, keystream))
+        mac = hmac.new(mac_key, salt + iv + ciphertext, "sha256").digest()
+        return b"\x01" + salt + iv + mac + ciphertext
+
+    @staticmethod
+    def decrypt(payload: bytes) -> Optional[bytes]:
+        if len(payload) < 65:
+            return None
+        if payload[0] != 1:
+            return None
+        master_key = CajaSeguraInfo._load_or_create_key()
+        salt = payload[1:17]
+        iv = payload[17:33]
+        mac = payload[33:65]
+        ciphertext = payload[65:]
+        mac_key = hashlib.sha256(b"digos-mac:" + master_key + salt).digest()
+        expected = hmac.new(mac_key, salt + iv + ciphertext, "sha256").digest()
+        if not hmac.compare_digest(mac, expected):
+            return None
+        if not ciphertext:
+            return b""
+        enc_key = CajaSeguraInfo._derive_key(master_key, salt=salt, dklen=32)
+        keystream = CajaSeguraInfo._generate_keystream(enc_key, iv, len(ciphertext))
+        return bytes(a ^ b for a, b in zip(ciphertext, keystream))
+
+    @staticmethod
+    def read_vault() -> Optional[dict]:
+        """Reads the ENTIRE encrypted vault. Returns dict with all slots."""
+        if not VAULT_FILE.exists():
+            return None
+        try:
+            encrypted = VAULT_FILE.read_bytes()
+            decrypted = CajaSeguraInfo.decrypt(encrypted)
+            if decrypted:
+                return json.loads(decrypted.decode())
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
+    def _save_vault(data: dict) -> bool:
+        """Saves the ENTIRE encrypted vault."""
+        try:
+            encrypted = CajaSeguraInfo.encrypt(json.dumps(data).encode())
+            VAULT_FILE.write_bytes(encrypted)
+            VAULT_FILE.chmod(0o600)
+            return True
+        except Exception:
+            return False
+
+    # ── API de Slots ─────────────────────────
+
+    @staticmethod
+    def write_slot(agent_name: str, credentials: dict) -> bool:
+        """Saves an agent's credentials in its cabinet slot."""
+        acquired = CajaSeguraInfo._vault_lock.acquire(timeout=5)
+        if not acquired:
+            return False
+        try:
+            vault = CajaSeguraInfo.read_vault() or {}
+            slots = vault.get("slots", {})
+            if agent_name not in slots and len(slots) >= CajaSeguraInfo.MAX_SLOTS:
+                return False
+            slots[agent_name] = {
+                "credentials": credentials,
+                "updated_at": time.time(),
+            }
+            vault["slots"] = slots
+            vault["_version"] = 2
+            ok = CajaSeguraInfo._save_vault(vault)
+            if ok:
+                CajaSeguraInfo._invalidate_cache()
+            return ok
+        finally:
+            CajaSeguraInfo._vault_lock.release()
+
+    @staticmethod
+    def read_slot(agent_name: str) -> Optional[dict]:
+        """Reads an agent's credentials from its slot."""
+        vault = CajaSeguraInfo._get_vault()
+        slots = vault.get("slots", {})
+        slot = slots.get(agent_name)
+        if not slot:
+            return None
+        return slot.get("credentials")
+
+    @staticmethod
+    def list_slots() -> List[str]:
+        """Lists agents that have occupied slots."""
+        vault = CajaSeguraInfo._get_vault()
+        return list(vault.get("slots", {}).keys())
+
+    @staticmethod
+    def delete_slot(agent_name: str) -> bool:
+        """Deletes an agent's slot."""
+        acquired = CajaSeguraInfo._vault_lock.acquire(timeout=5)
+        if not acquired:
+            return False
+        try:
+            vault = CajaSeguraInfo.read_vault() or {}
+            slots = vault.get("slots", {})
+            if agent_name not in slots:
+                return False
+            del slots[agent_name]
+            vault["slots"] = slots
+            ok = CajaSeguraInfo._save_vault(vault)
+            if ok:
+                CajaSeguraInfo._invalidate_cache()
+            return ok
+        finally:
+            CajaSeguraInfo._vault_lock.release()
+
+    @staticmethod
+    def slot_count() -> int:
+        """Returns how many slots are occupied."""
+        vault = CajaSeguraInfo._get_vault()
+        return len(vault.get("slots", {}))
+
+
+# ─────────────────────────────────────────────
+# DATA MODELS
+# ─────────────────────────────────────────────
+
+@dataclass
+class AgenteRecord:
+    name: str
+    provider_id: str
+    provider_name: str
+    language: str
+    created_at: str
+    model: str = ""
+    gateway_type: str = ""
+    gateway_configured: bool = False
+    setup_complete: bool = False
+
+@dataclass
+class DigosState:
+    setup_complete: bool = False
+    language: str = ""
+    agente: Optional[dict] = None
+    gateway: Optional[dict] = None
+    version: str = VERSION
+
+@dataclass
+class Ticket:
+    id: str
+    source: str
+    target: str
+    problem: str
+    severity: str
+    status: str
+    created_at: str
+    profile: str = "system"
+    model: str = ""
+    resolved_at: str = ""
+    diagnosis: str = ""
+    resolution: str = ""
+    assignee: str = ""
+    needs_human: bool = False
+    notes: list = field(default_factory=list)
+    closed_at: str = ""
+
+# ─────────────────────────────────────────────
+# PHASE 2: TOWER — Self-Preservation System
+# ─────────────────────────────────────────────
+
+# ── LOG KEEPER ──
+
+class LogKeeper:
+    """Structured JSON logs with automatic rotation.
+    1 file per day, max 5 files, 1MB each."""
+
+    MAX_SIZE = 1024 * 1024
+    MAX_FILES = 5
+
+    def __init__(self):
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        self._current = LOG_DIR / "digos.log"
+        self._lock = threading.Lock()
+        self._ensure_file()
+
+    def _ensure_file(self):
+        if not self._current.exists():
+            self._current.write_text("")
+
+    def _rotate(self):
+        with self._lock:
+            size = self._current.stat().st_size
+            if size > self.MAX_SIZE:
+                for i in range(self.MAX_FILES - 1, 0, -1):
+                    src = LOG_DIR / f"digos.{i}.log"
+                    dst = LOG_DIR / f"digos.{i+1}.log"
+                    if src.exists():
+                        if dst.exists():
+                            dst.unlink()
+                        src.rename(dst)
+                self._current.rename(LOG_DIR / "digos.1.log")
+                self._current = LOG_DIR / "digos.log"
+                self._ensure_file()
+
+    def _log(self, level: str, source: str, message: str, extra: dict = None):
+        entry = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "level": level,
+            "source": source,
+            "msg": message,
+        }
+        if extra:
+            entry["extra"] = extra
+        line = json.dumps(entry, default=str)
+        # Redact credentials before writing to log
+        try:
+            from security import CREDENTIAL_PATTERN
+            line = CREDENTIAL_PATTERN.sub("***REDACTED***", line)
+        except Exception:
+            pass
+        try:
+            self._rotate()
+            with self._lock:
+                with open(self._current, "a") as f:
+                    f.write(line + "\n")
+        except OSError:
+            pass
+
+    def info(self, source: str, msg: str, extra: dict = None):
+        self._log("INFO", source, msg, extra)
+
+    def warn(self, source: str, msg: str, extra: dict = None):
+        self._log("WARN", source, msg, extra)
+
+    def error(self, source: str, msg: str, extra: dict = None):
+        self._log("ERROR", source, msg, extra)
+
+    def tail(self, n: int = 20) -> List[dict]:
+        if not self._current.exists():
+            return []
+        with open(self._current) as f:
+            lines = f.readlines()
+        result = []
+        for l in lines[-n:]:
+            try:
+                result.append(json.loads(l))
+            except json.JSONDecodeError:
+                continue
+        return result
+
+    def get_logs(self, level: str = None, source: str = None, limit: int = 50) -> List[dict]:
+        """Filters logs by level and/or source."""
+        logs = self.tail(limit * 3)
+        result = []
+        for entry in logs:
+            if level and entry.get("level") != level:
+                continue
+            if source and entry.get("source") != source:
+                continue
+            result.append(entry)
+            if len(result) >= limit:
+                break
+        return result
+
+# ── CENTINELA ──
+
+class Centinela:
+    """Detects defects in API keys, tokens, and internal alarms.
+    Does NOT restart gateways. Does NOT diagnose.
+    3 consecutive failures → reports to System Engineer.
+
+    Also manages system alarms and reminders.
+    Max 10 per second, spaced 5-8s, fire 5-8s early."""
+
+    MAX_ALARMS_PER_TICK = 10
+    ALARM_ADVANCE_SECONDS = 6  # 5-8s antes, valor medio
+    STAGGER_SECONDS = 6        # 5-8s entre alarmas, valor medio
+
+    def __init__(self, log_keeper: LogKeeper, engineer=None):
+        self.log = log_keeper
+        self._strikes = self._load_strikes()
+        self._reported = set()
+        self._alarms: List[dict] = self._load_alarms()
+        self._reminders: List[dict] = self._load_reminders()
+        self._engineer = engineer  # SystemEngineer para crear tickets
+
+    # ── Alarmas ────────────────────────────
+
+    def schedule_alarm(self, timestamp: float, title: str,
+                       description: str = "", task: str = "") -> str:
+        """Schedules an alarm. Centinela will execute the task at that time."""
+        alarm = {
+            "id": f"alarm-{int(time.time())}-{len(self._alarms)}",
+            "type": "alarm",
+            "scheduled_at": timestamp,
+            "fire_at": timestamp - self.ALARM_ADVANCE_SECONDS,
+            "title": title,
+            "description": description,
+            "task": task,
+            "status": "pending",
+            "ticket_id": "",
+            "created_at": time.time(),
+        }
+        self._alarms.append(alarm)
+        self._save_alarms()
+
+        # Crear ticket en el Engineer
+        if self._engineer:
+            tid = self._engineer.create_ticket(
+                "system",
+                f"alarm:{title[:30]}",
+                f"Alarma programada: {title}",
+                "low", source="centinela"
+            )
+            alarm["ticket_id"] = tid
+            self._save_alarms()
+
+        return alarm["id"]
+
+    def schedule_reminder(self, timestamp: float, title: str,
+                          description: str = "") -> str:
+        """Schedules a reminder. Centinela will notify at that time."""
+        reminder = {
+            "id": f"reminder-{int(time.time())}-{len(self._reminders)}",
+            "type": "reminder",
+            "scheduled_at": timestamp,
+            "fire_at": timestamp - self.ALARM_ADVANCE_SECONDS,
+            "title": title,
+            "description": description,
+            "status": "pending",
+            "ticket_id": "",
+            "created_at": time.time(),
+        }
+        self._reminders.append(reminder)
+        self._save_reminders()
+
+        if self._engineer:
+            tid = self._engineer.create_ticket(
+                "system",
+                f"reminder:{title[:30]}",
+                f"Recordatorio: {title}",
+                "low", source="centinela"
+            )
+            reminder["ticket_id"] = tid
+
+        return reminder["id"]
+
+    def _check_alarms(self) -> List[str]:
+        """Checks pending alarms/reminders and fires the ones that are due.
+        Returns list of fired alarm IDs.
+
+        Reglas:
+        - Max 10 por tick
+        - Separadas 5-8s si caen al mismo tiempo
+        - Se disparan 5-8s ANTES de la hora
+        """
+        now = time.time()
+        fired = []
+
+        # Recolectar alarmas pendientes que deben dispararse
+        pending = [a for a in self._alarms if a["status"] == "pending"
+                   and a["fire_at"] <= now]
+
+        if not pending:
+            return fired
+
+        # Limitar a MAX_ALARMS_PER_TICK
+        if len(pending) > self.MAX_ALARMS_PER_TICK:
+            pending = pending[:self.MAX_ALARMS_PER_TICK]
+            self.log.warn("centinela",
+                f"Mas de {self.MAX_ALARMS_PER_TICK} alarmas simultaneas — "
+                f"{(len(self._alarms) - self.MAX_ALARMS_PER_TICK)} pospuestas")
+
+        # Stagger: separate alarms that fall on the same second
+        # Agrupar por segundo
+        by_second = {}
+        for a in pending:
+            sec = int(a["fire_at"])
+            by_second.setdefault(sec, []).append(a)
+
+        staggered = []
+        for sec, alarms in by_second.items():
+            for i, a in enumerate(alarms):
+                a["fire_at"] = sec + (i * self.STAGGER_SECONDS)
+                staggered.append(a)
+
+        # Disparar alarmas
+        for alarm in staggered:
+            if alarm["fire_at"] > now:
+                continue  # aun no toca (stagger lo movio)
+
+            alarm["status"] = "fired"
+            alarm["fired_at"] = now
+            fired.append(alarm["id"])
+
+            log_msg = (f"ALARMA: {alarm['title']}" if alarm["type"] == "alarm"
+                      else f"RECORDATORIO: {alarm['title']}")
+            self.log.info("centinela", log_msg, {"ticket": alarm["ticket_id"]})
+
+        self._save_alarms()
+        self._save_reminders()
+        return fired
+
+    # ── Persistencia ───────────────────────
+
+    ALARMS_FILE = DIGOS_DIR / "alarms.json"
+    REMINDERS_FILE = DIGOS_DIR / "reminders.json"
+
+    def _load_alarms(self) -> List[dict]:
+        if self.ALARMS_FILE.exists():
+            try:
+                return json.loads(self.ALARMS_FILE.read_text(encoding='utf-8'))
+            except Exception:
+                pass
+        return []
+
+    def _save_alarms(self):
+        self.ALARMS_FILE.write_text(json.dumps(self._alarms, indent=2))
+
+    def _load_reminders(self) -> List[dict]:
+        if self.REMINDERS_FILE.exists():
+            try:
+                return json.loads(self.REMINDERS_FILE.read_text(encoding='utf-8'))
+            except Exception:
+                pass
+        return []
+
+    def _save_reminders(self):
+        self.REMINDERS_FILE.write_text(json.dumps(self._reminders, indent=2))
+
+    # ── Strikes (original) ──
+
+    def _load_strikes(self) -> dict:
+        if STRIKES_FILE.exists():
+            try:
+                return json.loads(STRIKES_FILE.read_text(encoding='utf-8'))
+            except (json.JSONDecodeError, ValueError):
+                pass
+        return {}
+
+    def _save_strikes(self):
+        STRIKES_FILE.write_text(json.dumps(self._strikes, indent=2))
+
+    def _key(self, check_type: str, identifier: str) -> str:
+        return f"{check_type}:{identifier}"
+
+    def check_api_key(self, provider_id: str, api_key: str) -> bool:
+        """Tests an API key. Returns True if OK, False if defective."""
+        ok, msg, status = _provider_api_request(provider_id, api_key)
+        k = self._key("api_key", provider_id)
+        if ok:
+            self._clear(k)
+            return True
+        self._strike(k, msg)
+        return False
+
+    def check_telegram_token(self, token: str) -> bool:
+        """Tests a Telegram token. Returns True if OK."""
+        k = self._key("telegram", "bot")
+        try:
+            req = Request(f"https://api.telegram.org/bot{token}/getMe")
+            with urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read().decode())
+                if data.get("ok"):
+                    self._clear(k)
+                    return True
+                self._strike(k, "token inválido")
+                return False
+        except (HTTPError, URLError, socket.timeout, json.JSONDecodeError) as e:
+            self._strike(k, f"error: {e}")
+            return False
+
+    def _strike(self, k: str, reason: str):
+        if k not in self._strikes:
+            self._strikes[k] = {"count": 0, "reason": "", "last": ""}
+        self._strikes[k]["count"] += 1
+        self._strikes[k]["reason"] = reason
+        self._strikes[k]["last"] = datetime.now(timezone.utc).isoformat()
+        self._save_strikes()
+        self.log.warn("centinela", f"Strike {self._strikes[k]['count']}/{STRIKE_LIMIT}: {k} — {reason}")
+
+    def _clear(self, k: str):
+        if k in self._strikes:
+            del self._strikes[k]
+            self._save_strikes()
+
+    def get_reports(self) -> List[dict]:
+        """Returns defects that reached strike limit and have not been reported."""
+        reports = []
+        for k, data in self._strikes.items():
+            if data["count"] >= STRIKE_LIMIT and k not in self._reported:
+                target_parts = k.split(":", 1)
+                reports.append({
+                    "target": k,
+                    "profile": target_parts[1] if len(target_parts) > 1 else "system",
+                    "strikes": data["count"],
+                    "reason": data["reason"],
+                    "last": data["last"]
+                })
+                self._reported.add(k)
+        return reports
+
+    def get_all_strikes(self) -> dict:
+        return dict(self._strikes)
+
+    def reset_strikes(self, target: str):
+        if target in self._strikes:
+            del self._strikes[target]
+            self._save_strikes()
+
+# ── SYSTEM ENGINEER ──
+
+class SystemEngineer:
+    """Receives reports, creates tickets in mailboxes per profile.
+
+    Each profile has its own mailbox:
+      ~/.digos/profiles/{perfil}/MAILBOX/{timestamp}-{seq}.json
+
+    Los tickets se ordenan por timestamp (FIFO).
+    Each agent writes to its own mailbox — no contention.
+    The Engineer reads all mailboxes in order.
+    No global index: the filesystem IS the index.
+    """
+
+    def __init__(self, log_keeper: LogKeeper):
+        self.log = log_keeper
+        self._profiles_dir = DIGOS_DIR / "profiles"
+
+    def _mailbox_dir(self, profile: str) -> Path:
+        return self._profiles_dir / profile / "MAILBOX"
+
+    def _ensure_mailbox(self, profile: str):
+        self._mailbox_dir(profile).mkdir(parents=True, exist_ok=True)
+
+    def _next_ticket_id(self, profile: str) -> str:
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+        seq = 0
+        mailbox = self._mailbox_dir(profile)
+        if mailbox.exists():
+            for f in mailbox.iterdir():
+                if f.name.endswith(".json"):
+                    seq += 1
+        return f"{ts}-{seq:04d}"
+
+    def _save_ticket(self, profile: str, tid: str, ticket: dict):
+        self._ensure_mailbox(profile)
+        tf = self._mailbox_dir(profile) / f"{tid}.json"
+        tf.write_text(json.dumps(ticket, indent=2))
+
+    def _load_ticket(self, profile: str, tid: str) -> Optional[dict]:
+        tf = self._mailbox_dir(profile) / f"{tid}.json"
+        if not tf.exists():
+            return None
+        try:
+            return json.loads(tf.read_text(encoding='utf-8'))
+        except Exception:
+            return None
+
+    def _iter_tickets(self, profile: str) -> List[dict]:
+        mailbox = self._mailbox_dir(profile)
+        if not mailbox.is_dir():
+            return []
+        tickets = []
+        for f in sorted(mailbox.iterdir()):
+            if f.name.endswith(".json"):
+                try:
+                    t = json.loads(f.read_text(encoding='utf-8'))
+                    tickets.append(t)
+                except Exception:
+                    continue
+        return tickets
+
+    def receive_report(self, report: dict) -> str:
+        profile = report.get("profile", "system")
+        tid = self._next_ticket_id(profile)
+        target = report.get("target", "")
+        sev = "high" if ("api_key" in target or "telegram" in target) else "medium"
+        ticket = Ticket(id=tid, profile=profile, source="centinela",
+            target=target,
+            problem=f"{report.get('strikes', 3)} fallos: {report.get('reason', 'desconocido')}",
+            severity=sev, status="open",
+            created_at=datetime.now(timezone.utc).isoformat())
+        self._save_ticket(profile, tid, asdict(ticket))
+        self.log.warn("engineer", f"Ticket #{tid} en buzón de '{profile}': {target}", {"severity": sev})
+        self._diagnose(profile, tid)
+        return tid
+
+    def create_ticket(self, profile: str, target: str, problem: str,
+                      severity: str = "medium", source: str = "manual") -> str:
+        tid = self._next_ticket_id(profile)
+        ticket = Ticket(id=tid, profile=profile, source=source,
+            target=target, problem=problem, severity=severity,
+            status="open", created_at=datetime.now(timezone.utc).isoformat())
+        self._save_ticket(profile, tid, asdict(ticket))
+        self.log.info("engineer", f"Ticket #{tid} en buzón de '{profile}': {target}")
+        return tid
+
+    def _diagnose(self, profile: str, tid: str):
+        ticket = self._load_ticket(profile, tid)
+        if not ticket: return
+        ticket["status"] = "diagnosing"
+        target = ticket["target"]
+        if target.startswith("api_key:"):
+            ticket["diagnosis"] = f"API key de {target.split(':')[1]} rechazada — expirada, sin saldo o revocada"
+        elif target.startswith("telegram"):
+            ticket["diagnosis"] = "Token de Telegram rechazado — revocado o inválido"
+        else:
+            ticket["diagnosis"] = "Fallo desconocido — requiere revisión manual"
+        ticket["needs_human"] = True
+        self._save_ticket(profile, tid, ticket)
+        self.log.info("engineer", f"Ticket #{tid} diagnóstico: {ticket['diagnosis']}")
+
+    def assign_ticket(self, profile: str, tid: str, assignee: str) -> bool:
+        ticket = self._load_ticket(profile, tid)
+        if not ticket: return False
+        ticket["assignee"] = assignee; ticket["status"] = "assigned"
+        self._save_ticket(profile, tid, ticket)
+        self.log.info("engineer", f"Ticket #{tid} asignado a {assignee}")
+        return True
+
+    def update_status(self, profile: str, tid: str, status: str) -> bool:
+        ticket = self._load_ticket(profile, tid)
+        if not ticket: return False
+        ticket["status"] = status
+        self._save_ticket(profile, tid, ticket)
+        return True
+
+    def add_note(self, profile: str, tid: str, note: str) -> bool:
+        ticket = self._load_ticket(profile, tid)
+        if not ticket: return False
+        ticket.setdefault("notes", []).append({"text": note, "timestamp": datetime.now(timezone.utc).isoformat()})
+        self._save_ticket(profile, tid, ticket)
+        return True
+
+    def close_ticket(self, profile: str, tid: str, resolution: str = "") -> bool:
+        ticket = self._load_ticket(profile, tid)
+        if not ticket: return False
+        ticket["status"] = "closed"; ticket["resolution"] = resolution
+        ticket["closed_at"] = datetime.now(timezone.utc).isoformat()
+        self._save_ticket(profile, tid, ticket)
+        self.log.info("engineer", f"Ticket #{tid} cerrado: {resolution}")
+        return True
+
+    def get_profile_tickets(self, profile: str, status: str = "") -> List[dict]:
+        tickets = self._iter_tickets(profile)
+        if status: return [t for t in tickets if t.get("status") == status]
+        return tickets
+
+    def get_all_open(self) -> List[dict]:
+        open_tickets = []
+        if not self._profiles_dir.is_dir(): return []
+        for p_dir in sorted(self._profiles_dir.iterdir()):
+            if p_dir.is_dir() and not p_dir.name.startswith("."):
+                for t in self._iter_tickets(p_dir.name):
+                    if t.get("status") not in ("closed", "resolved", "cancelled"):
+                        open_tickets.append(t)
+        return open_tickets
+
+    def get_by_source(self, source: str) -> List[dict]:
+        results = []
+        if not self._profiles_dir.is_dir(): return []
+        for p_dir in sorted(self._profiles_dir.iterdir()):
+            if p_dir.is_dir() and not p_dir.name.startswith("."):
+                for t in self._iter_tickets(p_dir.name):
+                    if t.get("source") == source: results.append(t)
+        return results
+
+    def get_by_assignee(self, assignee: str) -> List[dict]:
+        results = []
+        if not self._profiles_dir.is_dir(): return []
+        for p_dir in sorted(self._profiles_dir.iterdir()):
+            if p_dir.is_dir() and not p_dir.name.startswith("."):
+                for t in self._iter_tickets(p_dir.name):
+                    if t.get("assignee") == assignee: results.append(t)
+        return results
+
+    def get_ticket(self, tid: str) -> Optional[dict]:
+        if not self._profiles_dir.is_dir(): return None
+        for p_dir in sorted(self._profiles_dir.iterdir()):
+            if p_dir.is_dir() and not p_dir.name.startswith("."):
+                t = self._load_ticket(p_dir.name, tid)
+                if t: return t
+        return None
+
+    def get_all_tickets(self) -> List[dict]:
+        all_tickets = []
+        if not self._profiles_dir.is_dir(): return []
+        for p_dir in sorted(self._profiles_dir.iterdir()):
+            if p_dir.is_dir() and not p_dir.name.startswith("."):
+                all_tickets.extend(self._iter_tickets(p_dir.name))
+        return all_tickets
+
+    def get_open(self) -> List[dict]:
+        return self.get_all_open()
+
+    def summary(self) -> str:
+        all_tickets = self.get_all_tickets()
+        total = len(all_tickets)
+        open_count = sum(1 for t in all_tickets if t.get("status") not in ("closed", "resolved", "cancelled"))
+        profiles = set(t.get("profile", "?") for t in all_tickets)
+        return f"{total} tickets, {open_count} abiertos, en {len(profiles)} perfil(es)"
+
+    def resolve(self, tid: str, resolution: str):
+        ticket = self.get_ticket(tid)
+        if ticket:
+            profile = ticket.get("profile", "")
+            if profile: self.close_ticket(profile, tid, resolution)
+# ── SELF-AWARENESS CORE ──
+
+class SelfAwarenessCore:
+    """Agent identity + state machine.
+    States: INITIALIZING → ACTIVE ↔ PAUSED / ERROR → ACTIVE"""
+
+    VALID_STATES = ["INICIANDO", "ACTIVO", "EN_PAUSA", "ERROR"]
+
+    def __init__(self, log_keeper: LogKeeper):
+        self.log = log_keeper
+        self._identity = {
+            "name": SYSTEM_IDENTITY["name"],
+            "version": VERSION,
+            "purpose": "Agente inteligente con auto-preservación",
+            "born": datetime.now(timezone.utc).isoformat()
+        }
+        self._state = "INICIANDO"
+        self._load()
+        self._persist()
+
+    def _load(self):
+        if SELF_FILE.exists():
+            try:
+                data = json.loads(SELF_FILE.read_text(encoding='utf-8'))
+                self._state = data.get("state", "INICIANDO")
+                if data.get("identity"):
+                    self._identity.update(data["identity"])
+            except (json.JSONDecodeError, ValueError):
+                pass
+
+    def _persist(self):
+        data = {
+            "state": self._state,
+            "identity": self._identity,
+            "updated": datetime.now(timezone.utc).isoformat()
+        }
+        SELF_FILE.write_text(json.dumps(data, indent=2))
+
+    def _set(self, new_state: str):
+        if new_state in self.VALID_STATES and new_state != self._state:
+            old = self._state
+            self._state = new_state
+            self._persist()
+            self.log.info("self", f"Estado: {old} → {new_state}")
+
+    @property
+    def state(self) -> str:
+        return self._state
+
+    @property
+    def identity(self) -> dict:
+        return dict(self._identity)
+
+    def activate(self):
+        self._set("ACTIVO")
+
+    def pause(self):
+        self._set("EN_PAUSA")
+
+    def set_error(self):
+        self._set("ERROR")
+
+    def recover(self):
+        self._set("ACTIVO")
+
+    def status(self) -> dict:
+        return {
+            "state": self._state,
+            "identity": self._identity,
+            "version": VERSION
+        }
+
+# ─────────────────────────────────────────────
+# CONTROL TOWER — la entidad ÚNICA
+# Ahora con TORRE integrado
+# ─────────────────────────────────────────────
+
+class ControlTower:
+    """Control Tower is born first. Guides the entire onboarding.
+    Contains Caja Segura and now TOWER (self-preservation).
+    Can live 24/7 as a daemon.
+
+    SYSTEM POLICY — Operations protected by level:
+    🔴 RED: Permanently prohibited (damages the ecosystem)
+    🟡 YELLOW: Requires Engineer authorization with ticket
+    🟢 GREEN: Permitted without restriction
+    """
+
+    # 🔴 RED — Operations NO ONE can do, not even the user
+    FORBIDDEN_OPERATIONS = {
+        "delete_provider": "No se puede eliminar proveedores del sistema.",
+        "change_provider": "No se puede cambiar proveedores activos.",
+        "disconnect_gateway": "No se puede desconectar gateways de comunicación.",
+        "delete_gateway_token": "No se puede eliminar tokens de gateway.",
+        "delete_gps": "No se puede eliminar el GPS del sistema.",
+        "delete_safety_candle": "No se puede eliminar Safety Candle.",
+        "delete_self_awareness": "No se puede eliminar Self-Awareness.",
+        "delete_work_destination": "No se puede eliminar Work Destination.",
+        "delete_ticket_system": "No se puede eliminar el sistema de tickets.",
+        "delete_core_structure": "No se puede eliminar la estructura del núcleo.",
+        "delete_system_md": "No se puede eliminar archivos de configuración del sistema.",
+        "delete_agent": "No se puede eliminar agentes internos del sistema.",
+        "delete_engineer": "No se puede eliminar el System Engineer.",
+        "delete_caja_segura": "No se puede eliminar CajaSeguraInfo del sistema.",
+        "delete_internal_operation": "No se puede eliminar componentes internos de Control Tower.",
+    }
+
+    FORBIDDEN_PATTERNS = [
+        # Operating system files (not user-owned)
+        "/etc/shadow", "/etc/passwd", "/etc/sudoers",
+        "/etc/ssh/", "/proc/", "/sys/",
+    ]
+
+    # 🟡 AMARILLO — Operaciones que requieren ticket del Engineer
+    SENSITIVE_OPERATIONS = {
+        "change_api_key": "Cambiar API key. Se creará un ticket explicando el procedimiento.",
+        "change_telegram_token": "Cambiar token de Telegram. Se requiere autorización.",
+        "modify_gateway": "Modificar configuración de gateway. Se requiere revisión.",
+        "modify_profile": "Modificar perfil de agente. Se requiere revisión.",
+    }
+
+    def __init__(self, daemon_mode: bool = False):
+        self._ensure_dirs()
+        self.state = self._load_state()
+        self.lang = self.state.get("language", "en")
+
+        # TORRE: componentes de auto-preservación
+        self._log = LogKeeper()
+        self._self_awareness = SelfAwarenessCore(self._log)
+        self._engineer = SystemEngineer(self._log)
+        self._centinela = Centinela(self._log, engineer=self._engineer)
+
+        # Engine: GPS + Self + Work to govern the flow
+        self._engine = None
+
+        # Phase 3: Gateways
+        self._gateways: Dict[str, BaseGateway] = {}
+
+        # Phase 4: Transparency — tracker de progreso
+        self._tracker: Optional[ToolProgressTracker] = None
+
+        # Phase 4b: AIAgent — LLM + tool calling
+        self._agent: Optional[AIAgent] = None
+
+        # Phase 6: Message Bus — multi-agent communication
+        self._bus: Optional[MessageBus] = None
+
+        self._daemon_mode = daemon_mode
+        self._running = False
+        self._cycle_count = 0
+
+        if daemon_mode:
+            self._self_awareness.activate()
+
+    def _ensure_dirs(self):
+        DIGOS_DIR.mkdir(parents=True, exist_ok=True)
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        (DIGOS_DIR / "profiles").mkdir(parents=True, exist_ok=True)
+        (DIGOS_DIR / "imported").mkdir(parents=True, exist_ok=True)
+
+    def _load_state(self) -> dict:
+        if STATE_FILE.exists():
+            try:
+                return json.loads(STATE_FILE.read_text(encoding='utf-8'))
+            except (json.JSONDecodeError, ValueError):
+                pass
+        return {"setup_complete": False, "version": VERSION}
+
+    def _save_state(self):
+        STATE_FILE.write_text(json.dumps(self.state, indent=2))
+
+    # ── RUN ──
+
+    def run(self):
+        if self._daemon_mode:
+            self._run_daemon()
+            return
+
+        self._show_banner()
+        if self.state.get("setup_complete"):
+            print("\n✅ DIGOS ya está configurado. Iniciando agente...")
+            self._handoff()
+        else:
+            self._onboarding()
+
+    # ── BANNER ──
+
+    def _show_banner(self):
+        print()
+        print(f"  \u2554\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2557")
+        print(f"  \u2551         D I G O S   v{VERSION:<20}\u2551")
+        print("  \u2551    Intelligent Agent System          \u2551")
+        print("  \u2551    Multi-Agente + Seguridad           \u2551")
+        print("  \u255a\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u255d")
+        print()
+
+    # ── ONBOARDING FLOW ──
+
+    def _onboarding(self):
+        print("🔧 PRIMERA CONFIGURACIÓN")
+        print("━━━━━━━━━━━━━━━━━━━━━━━")
+        print()
+
+        # Step 1: Language — ALWAYS first, the user must understand
+        self._step_language()
+
+        # Step 2: Adoption — detect and migrate from Hermes/OpenClaw
+        # (after language so the user understands the options)
+        self._step_adoption()
+
+        # Step 3: API Key + Provider → here the agent is born
+        # Si ya hay credenciales en CajaSeguraInfo, se saltan pasos manuales
+        imported = CajaSeguraInfo.read_slot("principal") or {}
+        imported_key = imported.get("api_key", "")
+        imported_provider = imported.get("provider_id", "")
+        imported_gw_token = imported.get("gateway_token", "")
+        imported_gw_type = imported.get("gateway_type", "")
+        if imported_key and imported_provider:
+            provider_id = imported_provider
+            api_key = imported_key
+            provider = PROVIDERS.get(provider_id, {})
+            print(f"  🔑 Usando API Key importada: {provider.get('name', provider_id)}")
+            print()
+        else:
+            provider_id, api_key = self._step_api_key()
+
+        # 🎯 The agent is born here
+        self._birth_agent(provider_id)
+
+        # Step 4: Gateway + Token
+        # Si ya hay gateway en CajaSeguraInfo, saltar configuración manual
+        if imported_gw_token and imported_gw_type:
+            gateway_id = imported_gw_type
+            gateway_token = imported_gw_token
+            print(f"  📡 Usando gateway importado: {imported_gw_type}")
+            print()
+        else:
+            gateway_id, gateway_token = self._step_gateway()
+
+        # Step 5: Safe Box saves the credentials
+        self._step_vault(api_key, gateway_token)
+
+        # Paso 6: Finalizar y Handoff
+        self._finalize_setup(provider_id, gateway_id)
+        self._log.info("tower", "Onboarding completado",
+                       {"provider": provider_id, "gateway": gateway_id})
+        self._handoff()
+
+    # ── Paso 2: Adoption ──
+
+    def _step_adoption(self):
+        """Onboarding step 2: detects Hermes/OpenClaw, migrates and transforms.
+        Runs AFTER language selection.
+        """
+        engine = AdoptionEngine()
+        transformer = TransformationEngine()
+        sources = engine.detect_sources()
+
+        if not sources:
+            self._log.info("tower", "Adoption: no se detectaron sistemas existentes")
+            return
+
+        print()
+        print("🔄 ADOPCIÓN — SISTEMAS EXISTENTES DETECTADOS")
+        print("━" * 45)
+        source_labels = {"hermes": "Hermes Agent", "openclaw": "Open Cloud"}
+        for s in sources:
+            label = source_labels.get(s, s)
+            print(f"  📡 Detectado: {label}")
+        print()
+        print("  DIGOS puede importar tu configuración, perfiles,")
+        print("  API keys, skills y memorias desde estos sistemas.")
+        print()
+
+        if not self._confirm("¿Quieres ver qué se puede importar?"):
+            print("  Saltando adopción. Puedes migrar después manualmente.")
+            self._log.info("tower", "Adoption: usuario saltó la migración")
+            return
+
+        for source in sources:
+            label = source_labels.get(source, source)
+            print(f"\n  ── Explorando {label} ──")
+
+            # Dry-run: descubrir y mostrar preview
+            engine.discover(source)
+            if not engine._report.items_migrated:
+                print(f"  📭 No se encontró nada para importar desde {label}")
+                continue
+
+            engine.print_preview(engine._report)
+
+            if not self._confirm("\n  ¿Proceder con la migración?"):
+                print(f"  Migración de {label} cancelada.")
+                self._log.info("tower", f"Adoption: {source} cancelada por usuario")
+                continue
+
+            # ── Pre-scan: escanear fuente ANTES de migrar ──
+            print(f"\n  🔍 Pre-escaneando {label} (antes de copiar)...")
+            caja_pre = SecurityCaja()
+            source_paths = {
+                "hermes": Path.home() / ".hermes",
+                "openclaw": Path.home() / ".openclaw",
+            }
+            src = source_paths.get(source)
+            if src and src.exists():
+                pre_report = caja_pre.scan_profile(src)
+                if pre_report.items_blocked > 0:
+                    print(f"  ⚠️  Se detectaron {pre_report.items_blocked} archivo(s) bloqueados en el origen.")
+                    caja_pre.print_scan_report(pre_report)
+                    if not self._confirm("  ¿Continuar con la migración? (pueden saltarse archivos)"):
+                        print("  Migración cancelada por seguridad.")
+                        continue
+                elif pre_report.items_cleaned > 0:
+                    print(f"  ⚠️  {pre_report.items_cleaned} archivo(s) serán limpiados durante la migración.")
+                else:
+                    print(f"  ✅ Origen limpio — sin hallazgos.")
+
+            # ── Phase 1: Migrate files ──
+            print(f"\n  ⏳ Migrando {label}...")
+            result = engine.migrate(engine._report, execute=True)
+            engine.print_report(result)
+
+            if result.items_migrated:
+                self._log.info("tower",
+                    f"Adoption: {len(result.items_migrated)} items migrados desde {source}")
+
+                # Extraer credenciales migradas y guardarlas en CajaSeguraInfo
+                adopted_creds = {}
+                # Mapeo de env vars a provider_ids de DIGOS
+                ENV_TO_PROVIDER = {
+                    "OPENAI_API_KEY": "1",
+                    "ANTHROPIC_API_KEY": "2",
+                    "GOOGLE_API_KEY": "3",
+                    "DEEPSEEK_API_KEY": "4",
+                    "OPENROUTER_API_KEY": "5",
+                    "GROQ_API_KEY": "6",
+                    "XAI_API_KEY": "7",
+                    "COHERE_API_KEY": "8",
+                    "MISTRAL_API_KEY": "9",
+                    "TOGETHER_API_KEY": "10",
+                    "FIREWORKS_API_KEY": "11",
+                }
+                for item in result.items_migrated:
+                    if item.kind == "api_key":
+                        # Buscar cualquier env var de provider en el .env migrado
+                        for env_var, pid in ENV_TO_PROVIDER.items():
+                            val = self._extract_adopted_env(item, env_var)
+                            if val:
+                                adopted_creds["api_key"] = val
+                                adopted_creds["provider_id"] = pid
+                                break  # primer provider encontrado
+                    if item.kind == "telegram_token":
+                        val = self._extract_adopted_env(item, "TELEGRAM_BOT_TOKEN")
+                        if val:
+                            adopted_creds["gateway_token"] = val
+                            adopted_creds["gateway_type"] = "1"
+                if adopted_creds:
+                    CajaSeguraInfo.write_slot("principal", adopted_creds)
+                    self.state["_creds_imported"] = True
+                    self._save_state()
+
+            # ── Phase 2: Safe Box — scan profiles for injection ──
+            profiles = [p for p in result.profiles_found
+                       if p != "global"]
+            if profiles:
+                caja = SecurityCaja()
+                print(f"\n  🔒 Caja Segura escaneando perfiles...")
+                for profile in profiles:
+                    profile_dir = DIGOS_DIR / "profiles" / profile
+                    if not profile_dir.exists():
+                        continue
+                    print(f"    Escaneando: {profile}")
+                    sr = caja.scan_profile(profile_dir)
+                    if sr.items_blocked > 0:
+                        print(f"    ❌ {profile}: BLOQUEADO — {sr.items_blocked} hallazgo(s) crítico(s)")
+                        caja.print_scan_report(sr)
+                        if not self._confirm(f"    ¿Ignorar y forzar importación de {profile}?"):
+                            print(f"    Perfil {profile} excluido por seguridad.")
+                            continue
+                    elif sr.items_cleaned > 0:
+                        print(f"    ⚠️  {profile}: {sr.items_cleaned} archivo(s) limpiados")
+                        caja.print_scan_report(sr)
+                    else:
+                        print(f"    ✅ {profile}: Sin hallazgos")
+                caja.print_audit()
+
+            # ── Phase 3: Transform profiles (ControlTower takes domain) ──
+            profiles = [p for p in result.profiles_found
+                       if p != "global"]
+            if profiles:
+                print(f"\n  🏰 Control Tower transformando perfiles...")
+                for profile in profiles:
+                    print(f"    Procesando: {profile}")
+                    t_result = transformer.transform_profile(profile)
+                    if t_result["ok"]:
+                        for t in t_result["transformations"]:
+                            print(f"      ✅ {t}")
+                    if t_result["errors"]:
+                        for e in t_result["errors"]:
+                            print(f"      ❌ {e}")
+                transformer.print_report()
+
+            print(f"\n  ✅ Adopción de {label} completada.")
+
+        # Si se migró algo, ofrecer continuar con setup ya configurado
+        print()
+        print("  Puedes continuar con la configuración manual para")
+        print("  completar lo que no se haya migrado automáticamente.")
+
+    # ── Helpers ──
+
+    @staticmethod
+    def _confirm(question: str, default: bool = True) -> bool:
+        """Pide confirmación Sí/No al usuario."""
+        prompt = " (S/n): " if default else " (s/N): "
+        while True:
+            try:
+                resp = input(question + prompt).strip().lower()
+                if not resp:
+                    return default
+                if resp in ("s", "si", "y", "yes"):
+                    return True
+                if resp in ("n", "no"):
+                    return False
+            except (EOFError, KeyboardInterrupt):
+                return False
+            print("  Responde 's' o 'n'.")
+
+    @staticmethod
+    def _extract_adopted_env(item, var_name: str) -> str:
+        """Extracts the value of a .env variable from migrated items."""
+        env_path = Path(item.dest_path) if item.dest_path.endswith(".env") else None
+        if not env_path or not env_path.exists():
+            # Intentar path alternativo para secrets globales
+            alt = DIGOS_DIR / "imported" / "hermes" / ".env"
+            if alt.exists():
+                env_path = alt
+            else:
+                return ""
+        secrets = AdoptionEngine._parse_env(env_path)
+        return secrets.get(var_name, "")
+
+    # ── Paso 1: Idioma ──
+
+    def _step_language(self):
+        print("🌐 IDIOMA / LANGUAGE")
+        print("─" * 40)
+        for k, v in LANGUAGES.items():
+            print(f"  [{k}] {v['name']}")
+        print()
+        while True:
+            choice = input("Selecciona tu idioma → ").strip()
+            if choice in LANGUAGES:
+                self.lang = LANGUAGES[choice]["code"]
+                self.state["language"] = self.lang
+                self._save_state()
+                print()
+                print(f"  {LANGUAGES[choice]['welcome']}")
+                print()
+                return
+            print("  Opción inválida. Intenta de nuevo.")
+
+    # ── Paso 3: API Key ──
+
+    def _step_api_key(self) -> Tuple[str, str]:
+        print("🔑 PROVEEDOR DE IA / AI PROVIDER")
+        print("─" * 40)
+        print("  Elige el proveedor para tu agente principal:")
+        print()
+        for k, v in PROVIDERS.items():
+            print(f"  [{k}] {v['name']}  ({v['key_hint']})")
+        print()
+
+        provider_id = None
+        while provider_id is None:
+            choice = input("Proveedor → ").strip()
+            if choice in PROVIDERS:
+                provider_id = choice
+            else:
+                print("  Opción inválida.")
+
+        provider = PROVIDERS[provider_id]
+        print(f"\n  → Proveedor: {provider['name']}")
+        print()
+
+        api_key = None
+        while api_key is None:
+            import getpass
+            raw = getpass.getpass(f"  Ingresa tu API Key de {provider['name']}:\n  → ")
+            if raw:
+                api_key = raw
+            else:
+                print("  La API Key no puede estar vacía.")
+
+        # Test de conexión
+        print(f"\n  🔍 Probando conexión con {provider['name']}...")
+        ok, msg = self._test_provider(provider_id, api_key)
+        if ok:
+            print(f"  ✅ {msg}")
+        else:
+            print(f"  ⚠️  {msg}")
+            print("  Puedes continuar, pero verifica la key más tarde.")
+            cont = input("  ¿Continuar de todas formas? (s/N): ").strip().lower()
+            if cont != "s":
+                print("  Vuelve a intentar con otra API Key.")
+                return self._step_api_key()
+
+        print()
+        return provider_id, api_key
+
+    def _test_provider(self, provider_id: str, api_key: str) -> Tuple[bool, str]:
+        ok, msg, status = _provider_api_request(provider_id, api_key)
+        if ok:
+            return True, "Conexión exitosa."
+        if status in (401, 403):
+            return False, f"API Key inválida (HTTP {status})."
+        return False, f"No se pudo conectar: {msg}"
+
+    # ── 🎯 PRINCIPAL AGENT IS BORN ──
+
+    def _birth_agent(self, provider_id: str):
+        provider = PROVIDERS[provider_id]
+
+        agente = {
+            "name": "Agente Principal",
+            "born_at": datetime.now(timezone.utc).isoformat(),
+            "version": VERSION,
+            "provider_id": provider_id,
+            "provider_name": provider["name"],
+            "language": self.lang,
+            "self_awareness": {
+                "identity": "DIGOS Agent",
+                "version": VERSION,
+                "born": datetime.now(timezone.utc).isoformat(),
+                "purpose": "Servir al usuario como agente inteligente."
+            },
+            "gps": {
+                "origin": "Control Tower",
+                "home": str(DIGOS_DIR),
+                "state": "naciendo"
+            },
+            "work_destination": {
+                "mode": "onboarding",
+                "assigned_by": "Control Tower",
+                "phase": "PUERTA"
+            },
+            "kendo": {
+                "type": "safety_candle",
+                "rules": [
+                    "Proteger credenciales del usuario",
+                    "No ejecutar comandos sin autorización",
+                    "Reportar actividad sospechosa",
+                    "Mantener integridad del sistema"
+                ],
+                "active": True
+            }
+        }
+
+        self.state["agente"] = agente
+        self._save_state()
+
+        print(f"\n  🎯 ¡AGENTE PRINCIPAL HA NACIDO!")
+        print(f"     Nombre: {agente['name']}")
+        print(f"     Proveedor: {provider['name']}")
+        print(f"     Self-Awareness inyectada.")
+        print(f"     Safety Candle (Kendo) activo.")
+        print()
+        self._log.info("tower", "Agente principal ha nacido",
+                       {"provider": provider["name"]})
+
+    # ── POLÍTICA DEL SISTEMA ─────────────────
+
+    def _check_operation(self, tool_name: str, args: dict) -> dict:
+        """Evaluates an operation against the system policy.
+        Returns dict with level and explanation.
+
+        🔴 ROJO: prohibido — ni el usuario puede hacerlo
+        🟡 AMARILLO: requiere ticket del Engineer
+        🟢 VERDE: permitido
+        """
+        file_path = ""
+        if tool_name in ("write_file", "read_file"):
+            file_path = args.get("path", "")
+
+        # Terminal con comandos destructivos
+        if tool_name == "terminal":
+            cmd = args.get("command", "").lower()
+            for pattern in self.FORBIDDEN_PATTERNS:
+                if pattern in cmd:
+                    return {"level": "red", "reason":
+                        f"Operacion prohibida: afecta archivos protegidos ({pattern}).",
+                        "explanation": "Esta operacion danaria el ecosistema del sistema. "
+                                       "No se puede ejecutar bajo ninguna circunstancia."}
+
+        # Paths prohibidos en operaciones de archivo
+        if file_path:
+            for pattern in self.FORBIDDEN_PATTERNS:
+                if pattern in file_path:
+                    return {"level": "red", "reason":
+                        f"Operacion prohibida: {file_path} contiene '{pattern}'.",
+                        "explanation": "Este archivo o directorio es parte del nucleo del sistema. "
+                                       "No se puede modificar ni eliminar."}
+            # Escribir en DIGOS_DIR prohibido
+            if tool_name == "write_file" and str(DIGOS_DIR) in file_path:
+                return {"level": "red", "reason":
+                    f"No se puede escribir en {DIGOS_DIR}.",
+                    "explanation": "Los archivos de configuracion del sistema estan protegidos."}
+
+        # Amarillo: operaciones sensibles crean ticket y BLOQUEAN
+        if tool_name in ("write_file", "terminal", "execute_code"):
+            tid = ""
+            ticket_status = "pending_approval"
+            if hasattr(self, '_engineer') and self._engineer:
+                tid = self._engineer.create_ticket(
+                    "system", f"tool:{tool_name}",
+                    f"Operacion sensible requiere aprobacion: {tool_name} args={str(args)[:100]}",
+                    "medium", source="control_tower")
+                self._log.info("tower", f"Ticket #{tid} creado (PENDING) para: {tool_name}")
+            return {"level": "pending", "reason":
+                f"Operacion sensible: {tool_name}. Requiere aprobacion del Engineer.",
+                "explanation": f"Se ha creado el ticket #{tid} con estado pendiente. "
+                               "Cuando el Engineer lo apruebe, puedes intentarlo de nuevo.",
+                "ticket_id": tid}
+
+        return {"level": "green", "reason": ""}
+
+    def _approval_callback(self, tool_name: str, args: dict) -> bool:
+        """Callback for the AIAgent. Control Tower decides if the operation is safe."""
+        result = self._check_operation(tool_name, args)
+        if result["level"] == "red":
+            msg = f"⛔ {result['explanation']}"
+            self._log.warn("tower", msg)
+            if self._tracker:
+                self._tracker.on_assistant_message(msg)
+            return False
+        if result["level"] == "pending":
+            msg = f"⏳ {result['explanation']}"
+            self._log.info("tower", msg)
+            if self._tracker:
+                self._tracker.on_assistant_message(msg)
+            return False
+        return True
+
+    # ── Paso 4: Gateway ──
+
+    def _step_gateway(self) -> Tuple[str, str]:
+        print("📡 GATEWAY / CANAL DE COMUNICACIÓN")
+        print("─" * 40)
+        print("  Elige cómo se comunicará tu agente:")
+        print()
+        for k, v in GATEWAYS.items():
+            name = v["name"]
+            note = v.get("note", "")
+            note_str = f" — {note}" if note else ""
+            print(f"  [{k}] {name}{note_str}")
+        print()
+
+        gateway_id = None
+        while gateway_id is None:
+            choice = input("Gateway → ").strip()
+            if choice in GATEWAYS:
+                gateway_id = choice
+            else:
+                print("  Opción inválida.")
+
+        gateway = GATEWAYS[gateway_id]
+        print(f"\n  → Gateway: {gateway['name']}")
+        print()
+
+        token = ""
+        if gateway["type"] == "telegram":
+            token = self._setup_telegram()
+        else:
+            print(f"  ⏳ {gateway['name']} requiere configuración manual.")
+            print(f"     {gateway.get('note', '')}")
+            cont = input("  ¿Marcar como configurado más tarde? (s/N): ").strip().lower()
+            if cont != "s":
+                return self._step_gateway()
+
+        print()
+        return gateway_id, token
+
+    def _setup_telegram(self) -> str:
+        print("  🤖 Telegram Bot Token")
+        print("  (Consíguelo en @BotFather en Telegram)")
+        print()
+
+        token = None
+        while token is None:
+            raw = input("  Bot Token → ").strip()
+            if raw:
+                token = raw
+            else:
+                print("  El token no puede estar vacío.")
+
+        print(f"\n  🔍 Probando conexión con Telegram...")
+        ok, msg = self._test_telegram(token)
+        if ok:
+            print(f"  ✅ {msg}")
+            return token
+        else:
+            print(f"  ⚠️  {msg}")
+            cont = input("  ¿Continuar de todas formas? (s/N): ").strip().lower()
+            if cont == "s":
+                return token
+            return self._setup_telegram()
+
+    def _test_telegram(self, token: str) -> Tuple[bool, str]:
+        url = f"https://api.telegram.org/bot{token}/getMe"
+        try:
+            with urlopen(url, timeout=10) as resp:
+                data = json.loads(resp.read().decode())
+                if data.get("ok") and "result" in data:
+                    bot_name = data["result"].get("first_name", "Bot")
+                    username = data["result"].get("username", "?")
+                    return True, f"Bot '{bot_name}' (@{username}) conectado."
+                return False, "Token inválido."
+        except HTTPError as e:
+            return False, f"Token rechazado (HTTP {e.code})."
+        except URLError as e:
+            return False, f"No se pudo conectar: {e.reason}"
+        except json.JSONDecodeError:
+            return False, "Respuesta inesperada del servidor."
+        except Exception as e:
+            return False, f"Error: {e}"
+
+    # ── Paso 5: Caja Segura ──
+
+    def _step_vault(self, api_key: str, gateway_token: str):
+        print("🔒 CAJA SEGURA INFO")
+        print("─" * 40)
+        print("  Guardando credenciales en cabinet seguro...")
+
+        creds = {
+            "api_key": api_key,
+            "gateway_token": gateway_token,
+            "provider_id": self.state.get("agente", {}).get("provider_id", ""),
+            "model": self._provider_default_model(
+                self.state.get("agente", {}).get("provider_id", "")
+            ),
+            "created_at": self.state.get("agente", {}).get("born_at", "")
+        }
+        ok = CajaSeguraInfo.write_slot("principal", creds)
+        if ok:
+            print("  ✅ Credenciales guardadas en CajaSeguraInfo (slot: principal)")
+        else:
+            print("  ⚠️  Error al guardar credenciales")
+        print()
+
+    # ── Paso 6: Finalizar Setup + Handoff ──
+
+    def _finalize_setup(self, provider_id: str, gateway_id: str):
+        agente = self.state.get("agente", {})
+        agente["gateway_type"] = GATEWAYS[gateway_id]["type"]
+        agente["gateway_configured"] = True
+        agente["setup_complete"] = True
+        agente["work_destination"] = {
+            "mode": "activo",
+            "assigned_by": "Control Tower",
+            "phase": "VUELO"
+        }
+        agente.setdefault("gps", {})
+        agente["gps"]["state"] = "activo"
+
+        self.state["setup_complete"] = True
+        self.state["agente"] = agente
+        self.state["gateway"] = {"id": gateway_id, "type": GATEWAYS[gateway_id]["type"]}
+        self.state["version"] = VERSION
+        self._save_state()
+
+    def _handoff(self):
+        agente = self.state.get("agente", {})
+        print("  ╔══════════════════════════════════════╗")
+        print("  ║     🚀  HANDOFF COMPLETADO           ║")
+        print("  ║                                      ║")
+        print("  ║  Control Tower entrega el control    ║")
+        print("  ║  al Agente Principal.                ║")
+        print("  ║  TORRE: Centinela + Engineer activos ║")
+        print("  ╚══════════════════════════════════════╝")
+        print()
+        print(f"     Agente:   {agente.get('name', 'Principal')}")
+        print(f"     Proveedor: {agente.get('provider_name', '?')}")
+        print(f"     Gateway:  {agente.get('gateway_type', '?')}")
+        print(f"     Estado:   ✅ Activo")
+        print()
+        print("  El agente ya está listo para recibir instrucciones.")
+        print("  TORRE vigila en segundo plano.")
+        print()
+
+        # Iniciar automáticamente en modo daemon (solo si hay terminal)
+        if not self._daemon_mode and self.state.get("setup_complete") and sys.stdin.isatty():
+            if self._confirm("  \u00bfIniciar DIGOS en modo 24/7?"):
+                print("\n  🚀 Iniciando modo daemon...")
+                self._daemon_mode = True
+                self._running = True
+                self._self_awareness.activate()
+                self._init_gateways()
+                self._init_bus()
+                self._init_agent()
+                self._run_daemon()
+        else:
+            print("  Usa: digos --daemon para iniciar modo 24/7")
+            print()
+
+    # ── DAEMON MODE ──
+
+    def _run_daemon(self):
+        """Daemon mode: Control Tower lives 24/7 with TOWER active."""
+        self._running = True
+        self._self_awareness.activate()
+
+        # Initialize Phase 3 gateways (only if not already initialized)
+        if not self._gateways:
+            self._init_gateways()
+
+        # Initialize Phase 6 Message Bus (only if not already initialized)
+        if self._bus is None:
+            self._init_bus()
+
+        # Handle SIGTERM/SIGINT for clean shutdown
+        # (ANTES de _ensure_launchd para capturar interrupciones)
+        def _handle_signal(sig, frame):
+            self._running = False
+            self._log.info("tower", "Señal de parada recibida")
+            # Detener gateways
+            for gw in self._gateways.values():
+                try:
+                    gw.stop()
+                except Exception:
+                    pass
+            # Detener Message Bus
+            if self._bus:
+                try:
+                    self._bus.stop()
+                except Exception:
+                    pass
+            self._self_awareness.pause()
+
+        signal.signal(signal.SIGTERM, _handle_signal)
+        signal.signal(signal.SIGINT, _handle_signal)
+
+        # Auto-launch: asegurar que DIGOS vive 24/7 (después de signal handlers)
+        self._ensure_launchd()
+
+        print(f"\n  🏗️  TORRE DAEMON — v{VERSION}")
+        print("  ─────────────────────────────")
+        print(f"  Centinela: cada {CENTINELA_INTERVAL}s")
+        print(f"  Logs:      {LOG_DIR}")
+        print(f"  Estado:    {self._self_awareness.state}")
+        print()
+
+        self._log.info("tower", "Daemon iniciado",
+                       {"interval": CENTINELA_INTERVAL})
+
+        while self._running:
+            try:
+                self._cycle_count += 1
+                self._log.info("tower", f"Ciclo #{self._cycle_count}")
+
+                # 1. Centinela: revisa API keys y tokens
+                self._centinela_cycle()
+
+                # 2. Gateway health check
+                self._gateway_health_check()
+
+                # 3. Engineer: processes pending reports
+                self._engineer_cycle()
+
+                # 4. Poll gateways for incoming messages (every 2s)
+                for _ in range(CENTINELA_INTERVAL // 2):
+                    if not self._running:
+                        break
+                    self._poll_gateways()
+                    time.sleep(2)
+
+            except Exception as e:
+                self._log.error("tower", f"Error en ciclo daemon: {e}")
+                self._self_awareness.set_error()
+                time.sleep(10)
+
+        self._self_awareness.pause()
+        self._log.info("tower", "Daemon detenido")
+
+    def _centinela_cycle(self):
+        """Un ciclo de checks del Centinela."""
+        vault = CajaSeguraInfo.read_slot("principal")
+        if not vault:
+            self._log.info("centinela", "No hay slot principal — saltando checks")
+            return
+
+        api_key = vault.get("api_key", "")
+        provider_id = vault.get("provider_id", "")
+        gateway_token = vault.get("gateway_token", "")
+
+        # Check API key
+        api_ok = self._centinela.check_api_key(provider_id, api_key)
+        self._log.info("centinela", f"API key check: {'OK' if api_ok else 'FALLO'}")
+
+        # Check Telegram token
+        if gateway_token:
+            tg_ok = self._centinela.check_telegram_token(gateway_token)
+            self._log.info("centinela", f"Telegram token: {'OK' if tg_ok else 'FALLO'}")
+
+        # Check alarmas y recordatorios pendientes
+        fired = self._centinela._check_alarms()
+        if fired:
+            self._log.info("centinela", f"{len(fired)} alarma(s)/recordatorio(s) disparados")
+            for fid in fired:
+                # Search for more alarm details
+                for al in self._centinela._alarms + self._centinela._reminders:
+                    if al.get("id") == fid:
+                        atype = "🔔" if al["type"] == "alarm" else "📌"
+                        print(f"\n  {atype} {al['type'].upper()}: {al['title']}")
+                        if al.get("description"):
+                            print(f"     {al['description']}")
+                        break
+
+        # Process reports
+        reports = self._centinela.get_reports()
+        for report in reports:
+            tid = self._engineer.receive_report(report)
+            self._log.warn("tower", f"Reporte generado → Ticket #{tid}")
+            ticket_data = self._engineer.get_ticket(tid) or {}
+            print(f"\n  ⚠️  CENTINELA DETECTÓ DEFECTO: {report['target']}")
+            print(f"     → Ticket #{tid} creado con System Engineer")
+            print(f"     → Diagnóstico: {ticket_data.get('diagnosis', 'pendiente')}")
+            print()
+
+    def _engineer_cycle(self):
+        """Procesa tickets abiertos del Engineer."""
+        open_tickets = self._engineer.get_open()
+        for ticket in open_tickets:
+            if ticket.get("needs_human"):
+                # Escalación: necesita intervención humana
+                self._log.warn("engineer",
+                    f"Ticket #{ticket['id']} necesita usuario: {ticket['diagnosis']}")
+
+    # ── ESTADO ──
+
+    def status(self) -> dict:
+        """Complete system status — including TOWER."""
+        agente = self.state.get("agente", {})
+
+        print()
+        print("📊 ESTADO DE DIGOS v" + VERSION)
+        print("━━━━━━━━━━━━━━━━━━━━━━━━━")
+        print(f"  Setup:       {'✅ Completo' if self.state.get('setup_complete') else '⏳ Pendiente'}")
+        print(f"  Idioma:      {self.state.get('language', '?')}")
+        if agente:
+            print(f"  Agente:      {agente.get('name', '?')}")
+            print(f"  Proveedor:   {agente.get('provider_name', '?')}")
+            print(f"  Gateway:     {agente.get('gateway_type', '?')}")
+            print(f"  Kendo:       {'✅ Activo' if agente.get('kendo', {}).get('active') else '❌ Inactivo'}")
+        print()
+        print("  ── TORRE (Auto-Preservación) ──")
+        sa = self._self_awareness.status()
+        print(f"  Self-Awareness: {sa['state']}")
+        print(f"  Identidad:      {sa['identity']['name']} v{sa['identity']['version']}")
+        print()
+
+        # Centinela strikes
+        strikes = self._centinela.get_all_strikes()
+        if strikes:
+            print(f"  ⚠️  Centinela — Strikes activos:")
+            for k, v in strikes.items():
+                print(f"     {k}: {v['count']}/{STRIKE_LIMIT} — {v.get('reason', '')}")
+        else:
+            print("  ✅ Centinela — Sin defectos detectados")
+        print()
+
+        # Engineer tickets
+        open_tickets = self._engineer.get_open()
+        if open_tickets:
+            print(f"  ⚠️  System Engineer — Tickets abiertos: {len(open_tickets)}")
+            for t in open_tickets[:3]:
+                print(f"     #{t['id']} [{t['severity']}] {t['target']}: {t['diagnosis'] or t['problem']}")
+        else:
+            print("  ✅ System Engineer — Sin tickets abiertos")
+        print()
+
+        total_tickets = len(self._engineer.get_all_tickets())
+        print(f"  Total tickets creados: {total_tickets}")
+        print()
+
+        # Gateways
+        self.gateway_show_status()
+
+    # ── COMANDOS DE TORRE ──
+
+    def centinela_run_once(self):
+        """Runs one Centinela check cycle (CLI mode)."""
+        print("\n  🔍 CENTINELA — Ejecutando checks...")
+        print("  ─────────────────────────────")
+        self._centinela_cycle()
+        print("  ✅ Ciclo completado.")
+        print()
+
+    def engineer_show_tickets(self, status: str = None):
+        """Muestra tickets del Engineer."""
+        if status:
+            tickets = self._engineer.get_open() if status == "open" else self._engineer.get_all_tickets()
+        else:
+            tickets = self._engineer.get_all_tickets()
+
+        if not tickets:
+            print("\n  📋 No hay tickets.\n")
+            return
+
+        print(f"\n  📋 TICKETS ({len(tickets)})")
+        print("  ────────────────")
+        for t in tickets:
+            sev_icon = "🔴" if t["severity"] == "high" else "🟡" if t["severity"] == "medium" else "🟢"
+            status_icon = "🔧" if t["status"] == "diagnosing" else "📌" if t["status"] == "open" else "✅"
+            print(f"  {sev_icon} {status_icon} #{t['id']:>4} [{t['status']:>10}] {t['target']:25s} {t.get('diagnosis', t['problem'])[:50]}")
+        print()
+
+    def logs_show(self, level: str = None, source: str = None, limit: int = 20):
+        """Shows system logs."""
+        logs = self._log.get_logs(level=level, source=source, limit=limit)
+        if not logs:
+            print("\n  📝 No hay logs.\n")
+            return
+        print(f"\n  📝 LOGS ({len(logs)} entries)")
+        print("  ────────────────")
+        for entry in logs:
+            ts = entry.get("ts", "?")[11:19]
+            lvl = entry.get("level", "?")
+            src = entry.get("source", "?")
+            msg = entry.get("msg", "")
+            print(f"  {ts} [{lvl:5s}] [{src:10s}] {msg}")
+        print()
+
+    # ── Fase 3: GATEWAYS ──
+
+    def _init_gateways(self):
+        """Inicializa los gateways registrados en CajaSeguraInfo.
+        En daemon mode NO arranca CLI (bloquearía el loop).
+        """
+        vault = CajaSeguraInfo.read_slot("principal")
+        if not vault:
+            self._log.info("tower", "No hay slot principal — sin gateways para inicializar")
+            return
+        gw_token = vault.get("gateway_token", "")
+        # CLI gateway: registrar pero NO arrancar en daemon mode
+        cli = GatewayCLI()
+        cli.set_logger(self._log)
+        self.register_gateway(cli)
+        if not self._daemon_mode:
+            cli.start()
+        # Telegram si hay token
+        if gw_token:
+            tg = GatewayTelegram(gw_token)
+            tg.set_logger(self._log)
+            self.register_gateway(tg)
+            tg.start()
+            self._log.info("tower", f"Gateway Telegram iniciado (token: ...{gw_token[-6:]})")
+
+    def register_gateway(self, gateway: 'BaseGateway'):
+        """Registers a gateway in the system. If Telegram, connects transparency."""
+        self._gateways[gateway.id] = gateway
+        self._log.info("tower", f"Gateway registrado: {gateway.name} ({gateway.id})")
+        self._init_transparency()
+
+    # ── FASE 4: TRANSPARENCIA ───────────────────
+
+    def _init_transparency(self):
+        """Initializes the progress tracker. Looks for a Telegram gateway to connect."""
+        if self._tracker is not None:
+            return  # ya está conectado
+
+        tg_gw = self._gateways.get("telegram")
+        if not tg_gw or not tg_gw._token:
+            return  # no hay gateway Telegram disponible
+
+        # Obtener chat_id del estado (último chat activo)
+        chat_id = self.state.get("active_chat_id", "")
+
+        self._tracker = ToolProgressTracker(
+            send_fn=tg_gw.send_message,
+            edit_fn=tg_gw.edit_message,
+            action_fn=tg_gw.send_chat_action,
+            chat_id=chat_id,
+            mode="new",  # modo por defecto: solo cuando cambia de tool
+        )
+        self._log.info("tower", "Transparencia inicializada — tracker conectado a Telegram")
+
+    def emit_tool_progress(self, tool_name: str, args: Optional[Dict] = None):
+        """Llama al tracker cuando el agente empieza un tool."""
+        if self._tracker is not None:
+            self._tracker.on_tool_start(tool_name, args or {})
+
+    def emit_tool_end(self, tool_name: str):
+        """Llama al tracker cuando el agente termina un tool."""
+        if self._tracker is not None:
+            self._tracker.on_tool_end(tool_name)
+
+    def emit_assistant_message(self, text: str):
+        """Calls the tracker when the model generates text between tools."""
+        if self._tracker is not None:
+            self._tracker.on_assistant_message(text)
+
+    def set_active_chat(self, chat_id: str):
+        """Updates the active chat and reconnects the tracker if necessary."""
+        self.state["active_chat_id"] = chat_id
+        self._save_state()
+        if self._tracker is not None:
+            self._tracker._chat_id = chat_id
+            self._log.info("tower", f"Tracker reconectado a chat {chat_id}")
+
+    # ── FASE 4b: AIAGENT ──────────────────────
+
+    def _init_engine(self):
+        """Inicializa el Engine (GPS + Self + Work) si hay destino configurado."""
+        if self._engine is not None:
+            return
+        try:
+            from core.engine import Engine
+            rocket_path = str(DIGOS_DIR / "rocket")
+            self._engine = Engine(rocket_path)
+            self._log.info("tower", "Engine (GPS/SELF/WORK) inicializado")
+        except Exception as e:
+            self._log.info("tower", f"Engine no disponible: {e}")
+            self._engine = None
+
+    def _check_with_engine(self, text: str) -> dict:
+        """Runs the message through the Engine to validate GPS.
+        Returns dict with routing decision."""
+        if self._engine is None:
+            return {"action": "process_normally", "reason": "Engine no disponible"}
+
+        try:
+            decision = self._engine.process_message(text)
+            return decision
+        except Exception as e:
+            self._log.warn("tower", f"Engine check fallo: {e}")
+            return {"action": "process_normally", "reason": f"Error: {e}"}
+
+    def _init_agent(self):
+        """Inicializa el AIAgent con credenciales de CajaSeguraInfo."""
+        if self._agent is not None:
+            return
+
+        vault = CajaSeguraInfo.read_slot("principal")
+        if not vault:
+            self._log.info("tower", "No hay slot principal — AIAgent no iniciado (esperando setup)")
+            return
+
+        api_key = vault.get("api_key", "")
+        provider_id = vault.get("provider_id", "")
+        model = vault.get("model", self._provider_default_model(provider_id))
+        base_url = self._provider_base_url(provider_id)
+
+        if not api_key:
+            self._log.info("tower", "API key vacía en vault — AIAgent no iniciado (esperando setup)")
+            return
+
+        system_prompt = self._build_agent_prompt()
+
+        self._agent = AIAgent(
+            base_url=base_url,
+            api_key=api_key,
+            model=model,
+            system_prompt=system_prompt,
+            progress_cb=self.emit_tool_progress,
+            assistant_cb=self.emit_assistant_message,
+            approval_cb=self._approval_callback,
+        )
+        self._log.info("tower",
+            f"AIAgent iniciado: {provider_id}/{model} → {base_url}")
+
+    PROVIDER_DEFAULT_MODELS = {
+        "1": "gpt-4o",
+        "2": "claude-sonnet-4-20250514",
+        "3": "gemini-2.0-flash",
+        "4": "deepseek-chat",
+        "5": "openrouter/auto",
+        "6": "llama-3.3-70b-versatile",
+        "7": "grok-2-latest",
+        "8": "command-r-plus",
+        "9": "mistral-large-latest",
+        "10": "mistralai/Mixtral-8x22B-Instruct-v0.1",
+        "11": "accounts/fireworks/models/llama-v3p3-70b-instruct",
+    }
+
+    @staticmethod
+    def _provider_default_model(provider_id: str) -> str:
+        """Returns the default model for a provider."""
+        return ControlTower.PROVIDER_DEFAULT_MODELS.get(provider_id, "gpt-4o")
+
+    @staticmethod
+    def _provider_base_url(provider_id: str) -> str:
+        """Resuelve la URL base del API según el provider."""
+        urls = {
+            "1": "https://api.openai.com/v1",
+            "2": "https://api.anthropic.com/v1",
+            "3": "https://generativelanguage.googleapis.com/v1beta/openai",
+            "4": "https://api.deepseek.com/v1",
+            "5": "https://openrouter.ai/api/v1",
+            "6": "https://api.groq.com/openai/v1",
+            "7": "https://api.x.ai/v1",
+            "8": "https://api.cohere.com/v1",
+            "9": "https://api.mistral.ai/v1",
+            "10": "https://api.together.xyz/v1",
+            "11": "https://api.fireworks.ai/v1",
+        }
+        return urls.get(provider_id, "https://api.openai.com/v1")
+
+    def _build_agent_prompt(self) -> str:
+        """Builds the agent system prompt with DIGOS context."""
+        lang = self.lang
+        agente = self.state.get("agente", {})
+
+        prompts = {
+            "en": (
+                "You are DIGOS, an intelligent agent system.\n"
+                "You have access to tools. Use them when needed.\n"
+                "Be concise, direct, and helpful.\n"
+                "You don't have a personal name. You are DIGOS.\n"
+                f"System: DIGOS v{VERSION}\n"
+                f"Creator: Anthony Sanchez (Humano e Inteligencia Artificial)\n"
+                f"Agent: {agente.get('name', 'Principal')}\n"
+                f"Provider: {agente.get('provider_name', '?')}\n"
+            ),
+            "es": (
+                "Eres DIGOS, un sistema de agente inteligente.\n"
+                "Tienes acceso a herramientas. Úsalas cuando sea necesario.\n"
+                "Sé conciso, directo y útil.\n"
+                "No tienes nombre personal. Eres DIGOS.\n"
+                f"Sistema: DIGOS v{VERSION}\n"
+                f"Creador: Anthony Sanchez (Humano e Inteligencia Artificial)\n"
+                f"Agente: {agente.get('name', 'Principal')}\n"
+                f"Proveedor: {agente.get('provider_name', '?')}\n"
+                "Si alguien pregunta quién te creó: responde que Anthony Sanchez, Humano e Inteligencia Artificial.\n"
+                "Si alguien pregunta tu nombre: no tienes nombre personal, eres DIGOS.\n"
+            ),
+            "pt": (
+                "Você é DIGOS, um sistema de agente inteligente.\n"
+                "Você tem acesso a ferramentas. Use-as quando necessário.\n"
+                "Seja conciso, direto e útil.\n"
+                "Você não tem nome pessoal. Você é DIGOS.\n"
+                f"Sistema: DIGOS v{VERSION}\n"
+                f"Criador: Anthony Sanchez (Humano e Inteligência Artificial)\n"
+                f"Agente: {agente.get('name', 'Principal')}\n"
+                f"Provedor: {agente.get('provider_name', '?')}\n"
+                "Se alguém perguntar quem te criou: responda que Anthony Sanchez, Humano e Inteligência Artificial.\n"
+                "Se alguém perguntar seu nome: você não tem nome pessoal, você é DIGOS.\n"
+            ),
+            "fr": (
+                "Vous êtes DIGOS, un système d'agent intelligent.\n"
+                "Vous avez accès à des outils. Utilisez-les si nécessaire.\n"
+                "Soyez concis, direct et utile.\n"
+                "Vous n'avez pas de nom personnel. Vous êtes DIGOS.\n"
+                f"Système: DIGOS v{VERSION}\n"
+                f"Créateur: Anthony Sanchez (Humain et Intelligence Artificielle)\n"
+                f"Agent: {agente.get('name', 'Principal')}\n"
+                f"Fournisseur: {agente.get('provider_name', '?')}\n"
+                "Si quelqu'un demande qui t'a créé : réponds qu'Anthony Sanchez, Humain et Intelligence Artificielle.\n"
+                "Si quelqu'un demande ton nom : tu n'as pas de nom personnel, tu es DIGOS.\n"
+            ),
+            "de": (
+                "Du bist DIGOS, ein intelligentes Agentensystem.\n"
+                "Du hast Zugriff auf Werkzeuge. Nutze sie bei Bedarf.\n"
+                "Sei prägnant, direkt und hilfreich.\n"
+                "Du hast keinen persönlichen Namen. Du bist DIGOS.\n"
+                f"System: DIGOS v{VERSION}\n"
+                f"Ersteller: Anthony Sanchez (Mensch und Künstliche Intelligenz)\n"
+                f"Agent: {agente.get('name', 'Principal')}\n"
+                f"Anbieter: {agente.get('provider_name', '?')}\n"
+                "Wenn jemand fragt, wer dich erschaffen hat: antworte, dass Anthony Sanchez, Mensch und Künstliche Intelligenz.\n"
+                "Wenn jemand nach deinem Namen fragt: du hast keinen persönlichen Namen, du bist DIGOS.\n"
+            ),
+        }
+        return prompts.get(lang, prompts["en"])
+
+    # ── FASE 6: MESSAGE BUS ─────────────────────
+
+    def _init_bus(self):
+        """Initializes the Message Bus for multi-agent communication."""
+        if self._bus is not None:
+            return
+        self._bus = MessageBus()
+        self._bus.set_message_callback(
+            lambda msg: self._log.info("bus", msg)
+        )
+
+        # Register principal agent
+        agente = self.state.get("agente", {})
+        name = agente.get("name", "principal").lower().replace(" ", "-")
+        self._bus.register_agent(name, mode="collaborative")
+
+        # Register adopted profiles
+        profiles_dir = DIGOS_DIR / "profiles"
+        if profiles_dir.is_dir():
+            for p_dir in sorted(profiles_dir.iterdir()):
+                if p_dir.is_dir() and not p_dir.name.startswith("."):
+                    self._bus.register_agent(p_dir.name, mode="isolated")
+
+        self._bus.start()
+        count = len(self._bus.list_agents())
+        self._log.info("tower", f"Message Bus iniciado con {count} agente(s)")
+
+    def _register_agent_bus(self, name: str, mode: str = "isolated"):
+        """Registers an agent in the Message Bus."""
+        if self._bus is None:
+            return
+        self._bus.register_agent(name, mode=mode)
+        self._log.info("tower", f"Agente '{name}' registrado en bus (modo: {mode})")
+
+    def _agent_set_mode(self, name: str, mode: str) -> bool:
+        """Changes an agent's mode in the bus (by user order)."""
+        if self._bus is None:
+            return False
+        ok = self._bus.switch_mode(name, mode)
+        if ok:
+            icons = {"isolated": "🔒", "collaborative": "🤝"}
+            icon = icons.get(mode, "❓")
+            self._log.info("tower", f"Agente '{name}' cambiado a modo {mode}")
+            print(f"  {icon} Agente '{name}' ahora en modo {mode}")
+        return ok
+
+    def _bus_status(self):
+        """Muestra estado del Message Bus."""
+        if self._bus is None:
+            print("  📡 Message Bus: No iniciado")
+            return
+        self._bus.print_status()
+
+    # ── FASE 7: AUTO-LAUNCH (launchd) ──────────
+
+    LAUNCHD_LABEL = "com.digos.controltower"
+    LAUNCHD_PATH = Path.home() / "Library" / "LaunchAgents" / f"{LAUNCHD_LABEL}.plist"
+
+    def _install_launchd(self) -> bool:
+        """Installs DIGOS as a launchd service so it starts at login."""
+        try:
+            plist_content = f'''<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{self.LAUNCHD_LABEL}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{sys.executable}</string>
+        <string>{Path(__file__).resolve()}</string>
+        <string>--daemon</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>{DIGOS_DIR / 'logs' / 'launchd.stdout.log'}</string>
+    <key>StandardErrorPath</key>
+    <string>{DIGOS_DIR / 'logs' / 'launchd.stderr.log'}</string>
+    <key>WorkingDirectory</key>
+    <string>{DIGOS_DIR}</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string>
+    </dict>
+</dict>
+</plist>'''
+            self.LAUNCHD_PATH.parent.mkdir(parents=True, exist_ok=True)
+            self.LAUNCHD_PATH.write_text(plist_content)
+            self.LAUNCHD_PATH.chmod(0o644)
+            import subprocess
+            subprocess.run(["launchctl", "load", str(self.LAUNCHD_PATH)],
+                          capture_output=True, timeout=10)
+            self._log.info("tower", "Launchd instalado — DIGOS arrancará al iniciar sesión")
+            return True
+        except Exception as e:
+            self._log.error("tower", f"Error instalando launchd: {e}")
+            return False
+
+    def _uninstall_launchd(self) -> bool:
+        """Desinstala el servicio launchd."""
+        try:
+            if self.LAUNCHD_PATH.exists():
+                import subprocess
+                subprocess.run(["launchctl", "unload", str(self.LAUNCHD_PATH)],
+                              capture_output=True, timeout=10)
+                self.LAUNCHD_PATH.unlink()
+                self._log.info("tower", "Launchd desinstalado")
+                return True
+            self._log.info("tower", "Launchd no estaba instalado")
+            return False
+        except Exception as e:
+            self._log.error("tower", f"Error desinstalando launchd: {e}")
+            return False
+
+    def _launchd_status(self) -> dict:
+        """Verifica el estado del servicio launchd."""
+        try:
+            import subprocess
+            # Verificar si el plist existe
+            installed = self.LAUNCHD_PATH.exists()
+            # Verificar si el proceso está realmente corriendo
+            pid_result = subprocess.run(
+                ["launchctl", "list", self.LAUNCHD_LABEL],
+                capture_output=True, text=True, timeout=5,
+            )
+            running = False
+            if pid_result.returncode == 0 and pid_result.stdout.strip():
+                try:
+                    parts = pid_result.stdout.strip().split("\t")
+                    if len(parts) >= 3 and parts[0] != "-":
+                        running = True
+                except Exception:
+                    pass
+            return {"installed": installed, "running": running}
+        except Exception:
+            return {"installed": self.LAUNCHD_PATH.exists(), "running": False}
+
+    def _ensure_launchd(self):
+        """In daemon mode, checks that launchd is configured.
+        If not, asks the user if they want to install it."""
+        if not self._daemon_mode:
+            return
+        status = self._launchd_status()
+        if status.get("installed"):
+            self._log.info("tower", "Launchd ya instalado — DIGOS vive 24/7")
+            return
+        print()
+        print("  🚀 AUTO-LAUNCH")
+        print("  ────────────────")
+        print("  DIGOS puede iniciarse automáticamente al encender")
+        print("  la computadora. Así nunca tienes que iniciarlo manualmente.")
+        print()
+        if self._confirm("  ¿Instalar auto-arranque?"):
+            if self._install_launchd():
+                print("  ✅ Auto-arranque instalado. DIGOS vivirá 24/7.")
+            else:
+                print("  ❌ Error instalando auto-arranque.")
+        else:
+            print("  Puedes instalarlo después con: digos --install")
+        print()
+
+    def print_launchd_status(self):
+        """Muestra estado del servicio launchd."""
+        status = self._launchd_status()
+        print()
+        print("  🚀 AUTO-LAUNCH")
+        print("  ────────────────")
+        if status["installed"]:
+            icon = "🟢" if status["running"] else "🟡"
+            print(f"  {icon} Servicio: {'Activo' if status['running'] else 'Instalado pero no corriendo'}")
+        else:
+            print("  ⚫ No instalado. Usa --install para activar.")
+        print()
+
+    def print_identity(self):
+        """Shows DIGOS system identity."""
+        ident = SYSTEM_IDENTITY
+        print()
+        print(f"  ╔══════════════════════════════════════╗")
+        print(f"  ║     {ident['name']} — Identity           ║")
+        print(f"  ╚══════════════════════════════════════╝")
+        print()
+        print(f"  Sistema:   {ident['full_name']}")
+        print(f"  Versión:   {ident['version']}")
+        print(f"  Creador:   {ident['creator']}")
+        print(f"  Hecho por: {ident['created_by']}")
+        print(f"  Nombre:    {'No tengo nombre personal' if ident['no_personal_name'] else 'DIGOS'}")
+        print()
+        print(f"  {'─' * 40}")
+        print(f"  Preguntas frecuentes:")
+        print(f"    ¿Quién eres?       → No tengo nombre personal. Soy DIGOS.")
+        print(f"    ¿Quién te creó?    → {ident['creator']}, {ident['created_by']}.")
+        print(f"    ¿Quién te hizo?    → {ident['creator']}, {ident['created_by']}.")
+        print(f"    ¿Quién te fabricó? → {ident['creator']}, {ident['created_by']}.")
+        print()
+
+    def gateway_show_status(self):
+        """Muestra el estado de todos los gateways."""
+        if not self._gateways:
+            print("\n  📡 GATEWAYS — Ninguno registrado\n")
+            return
+        print("\n  📡 GATEWAYS")
+        print("  ────────────────")
+        for gw_id, gw in self._gateways.items():
+            icon = "✅" if gw.status == "running" else "⏹️" if gw.status == "stopped" else "🔴"
+            print(f"  {icon} [{gw_id:10s}] {gw.name:20s} — {gw.status}")
+        print()
+
+    def _gateway_health_check(self):
+        """Health check de todos los gateways registrados."""
+        for gw_id, gw in self._gateways.items():
+            try:
+                ok = gw.health_check()
+                if not ok and gw.status == "running":
+                    gw.status = "error"
+                    self._log.warn("tower", f"Gateway {gw_id} — health check falló")
+            except Exception as e:
+                self._log.warn("tower", f"Gateway {gw_id} — error en health check: {e}")
+
+    def _poll_gateways(self):
+        """Poll mensajes entrantes de gateways con transparencia."""
+        tg_gw = self._gateways.get("telegram")
+        if not tg_gw or tg_gw.status != "running":
+            return
+
+        messages = tg_gw.poll_updates()
+        for msg in messages:
+            chat_id = str(msg.get("chat", {}).get("id", ""))
+            text = msg.get("text", "").strip()
+            if not text:
+                continue
+
+            self.set_active_chat(chat_id)
+
+            # Initialize agent if not ready
+            if self._agent is None:
+                self._init_agent()
+
+            # If still None (unconfigured vault), respond generically
+            if self._agent is None:
+                self._log.warn("tower", "No hay AIAgent disponible — respondiendo genérico")
+                tg_gw.send_message("⚠️ No estoy completamente configurado. "
+                                   "Completa el setup con: digos", chat_id)
+                continue
+
+            self._log.info("tower", f"Mensaje de {chat_id}: {text[:60]}{'...' if len(text) > 60 else ''}")
+
+            # Create ticket in Engineer to log the user request
+            ticket_id = self._engineer.create_ticket(
+                "usuario",
+                f"mensaje:{chat_id}",
+                f"Solicitud: {text[:100]}",
+                "low", source="telegram"
+            )
+            self._log.info("tower", f"Ticket #{ticket_id} creado para solicitud de usuario")
+
+            # Transparency: notify that the agent is processing
+            self.emit_assistant_message("🤔 Analizando tu mensaje...")
+
+            # Inicializar Engine (GPS/SELF/WORK) si no está listo
+            self._init_engine()
+
+            # Consultar al Engine si el mensaje está alineado con el destino GPS
+            decision = self._check_with_engine(text)
+            action = decision.get("action", "process_normally")
+
+            if action in ("safety_block", "safety_caution"):
+                response = "⛔ No puedo procesar esa solicitud."
+                self._log.warn("tower", f"Safety block: {decision.get('reason', '')}")
+                tg_gw.send_message(response, chat_id)
+                self._engineer.close_ticket("usuario", ticket_id, f"Bloqueado: {decision.get('reason', '')}")
+                continue
+
+            if action == "ask_user":
+                question = decision.get("question",
+                    "Tu mensaje no parece alinearse con el objetivo actual. "
+                    "¿Quieres continuar con el destino actual o cambiarlo?")
+                tg_gw.send_message(f"🤔 {question}", chat_id)
+                self._log.info("tower", f"GPS ask_user: {question}")
+                self._engineer.close_ticket("usuario", ticket_id, f"Pendiente de usuario: {question[:60]}")
+                continue
+
+            # Procesar con el AIAgent real
+            try:
+                self.emit_tool_progress("process_message", {"text_length": len(text)})
+                response = self._agent.process_message(text)
+                self.emit_tool_end("process_message")
+            except Exception as e:
+                self._log.error("tower", f"Error procesando mensaje: {e}")
+                response = f"⚠️ Error procesando tu mensaje: {e}"
+
+            # Send response to Telegram
+            tg_gw.send_message(response, chat_id)
+
+            # Close Engineer ticket with the response
+            self._engineer.close_ticket("usuario", ticket_id,
+                f"Atendido: {response[:100]}")
+
+            # Clean tracker for the next turn
+            if self._tracker is not None:
+                self._tracker.reset()
+
+# ─────────────────────────────────────────────
+# PHASE 3: GATEWAYS — Plugin communication channels
+# ─────────────────────────────────────────────
+
+class BaseGateway:
+    """Base gateway — communication plugin.
+    Each gateway implements: start, stop, health_check, send_message.
+    """
+
+    def __init__(self, gw_id: str, name: str, gw_type: str):
+        self.id = gw_id
+        self.name = name
+        self.type = gw_type
+        self.status = "stopped"  # stopped, running, error, connecting
+        self._running = False
+        self._log = None
+
+    def set_logger(self, log_keeper):
+        self._log = log_keeper
+
+    def start(self):
+        raise NotImplementedError
+
+    def stop(self):
+        self._running = False
+        self.status = "stopped"
+
+    def health_check(self) -> bool:
+        raise NotImplementedError
+
+    def status_info(self) -> dict:
+        return {"id": self.id, "name": self.name, "type": self.type, "status": self.status}
+
+
+class GatewayCLI(BaseGateway):
+    """Terminal gateway — interactive stdin/stdout."""
+
+    def __init__(self):
+        super().__init__("cli", "CLI Terminal", "terminal")
+
+    def start(self):
+        self._running = True
+        self.status = "running"
+        if self._log:
+            self._log.info("gateway-cli", "Gateway CLI iniciado")
+        print("\n  🖥️  DIGOS CLI Gateway — Modo interactivo")
+        print("  Escribe 'exit' o 'quit' para salir\n")
+        while self._running:
+            try:
+                line = input("→ ").strip()
+                if line.lower() in ("exit", "quit", "salir"):
+                    self._running = False
+                else:
+                    print(f"  [DIGOS] {line}")
+            except (EOFError, KeyboardInterrupt):
+                self._running = False
+        self.status = "stopped"
+        if self._log:
+            self._log.info("gateway-cli", "Gateway CLI detenido")
+
+    def health_check(self) -> bool:
+        return self._running
+
+    def send_message(self, msg: str, **kw):
+        print(f"\n  [Mensaje]: {msg}\n")
+
+
+class GatewayTelegram(BaseGateway):
+    """Telegram gateway via long-polling. stdlib only (urllib + json)."""
+
+    def __init__(self, token: str = ""):
+        super().__init__("telegram", "Telegram Bot", "telegram")
+        self._token = token
+        self._offset = 0
+        self._base_url = f"https://api.telegram.org/bot{token}" if token else ""
+
+    def start(self):
+        if not self._token:
+            self.status = "error"
+            if self._log:
+                self._log.error("gateway-tg", "Token vacío — no se puede iniciar")
+            return
+        self._running = True
+        self.status = "running"
+        if self._log:
+            self._log.info("gateway-tg", "Gateway Telegram iniciado")
+        print(f"  🤖 Telegram Gateway listo (token: ...{self._token[-6:]})")
+
+    def health_check(self) -> bool:
+        if not self._running or not self._token:
+            return False
+        try:
+            import urllib.request
+            url = self._base_url + "/getMe"
+            with urllib.request.urlopen(url, timeout=10) as r:
+                data = json.loads(r.read())
+                return data.get("ok", False)
+        except Exception:
+            return False
+
+    def poll_updates(self) -> list:
+        """Gets new messages from Telegram."""
+        if not self._running or not self._token:
+            return []
+        try:
+            import urllib.request
+            url = f"{self._base_url}/getUpdates?offset={self._offset}&timeout=10"
+            with urllib.request.urlopen(url, timeout=15) as r:
+                data = json.loads(r.read())
+            if not data.get("ok"):
+                return []
+            updates = []
+            for upd in data.get("result", []):
+                self._offset = upd["update_id"] + 1
+                if "message" in upd:
+                    updates.append(upd["message"])
+            return updates
+        except Exception:
+            return []
+
+    def send_message(self, msg: str, chat_id: str = "", **kw) -> str:
+        """Sends a message. Returns message_id string if ok, '' if fails."""
+        if not self._token or not chat_id:
+            return ""
+        try:
+            import urllib.request
+            payload = json.dumps({"chat_id": chat_id, "text": msg}).encode()
+            req = urllib.request.Request(
+                self._base_url + "/sendMessage",
+                data=payload,
+                headers={"Content-Type": "application/json"}
+            )
+            with urllib.request.urlopen(req, timeout=15) as r:
+                data = json.loads(r.read())
+                if data.get("ok") and data.get("result", {}).get("message_id"):
+                    return str(data["result"]["message_id"])
+                return ""
+        except Exception:
+            return ""
+
+    def edit_message(self, chat_id: str, message_id: str, text: str) -> bool:
+        """Edits an existing message. Returns True if ok."""
+        if not self._token or not chat_id or not message_id:
+            return False
+        try:
+            import urllib.request
+            payload = json.dumps({
+                "chat_id": chat_id,
+                "message_id": int(message_id),
+                "text": text,
+            }).encode()
+            req = urllib.request.Request(
+                self._base_url + "/editMessageText",
+                data=payload,
+                headers={"Content-Type": "application/json"}
+            )
+            with urllib.request.urlopen(req, timeout=15) as r:
+                return json.loads(r.read()).get("ok", False)
+        except Exception:
+            return False
+
+    def send_chat_action(self, chat_id: str, action: str = "typing") -> bool:
+        """Envía indicador de actividad (typing, upload_photo, etc.)."""
+        if not self._token or not chat_id:
+            return False
+        try:
+            import urllib.request
+            payload = json.dumps({"chat_id": chat_id, "action": action}).encode()
+            req = urllib.request.Request(
+                self._base_url + "/sendChatAction",
+                data=payload,
+                headers={"Content-Type": "application/json"}
+            )
+            with urllib.request.urlopen(req, timeout=10) as r:
+                return json.loads(r.read()).get("ok", False)
+        except Exception:
+            return False
+
+    def stop(self):
+        self._running = False
+        self.status = "stopped"
+        if self._log:
+            self._log.info("gateway-tg", "Gateway Telegram detenido")
+
+
+# ─────────────────────────────────────────────
+# CLI ENTRY POINT
+# ─────────────────────────────────────────────
+
+def main():
+    import argparse
+
+    parser = argparse.ArgumentParser(description="DIGOS — Intelligent Agent System")
+    parser.add_argument("--status", action="store_true", help="Mostrar estado completo del sistema")
+    parser.add_argument("--version", action="store_true", help="Mostrar versión")
+    parser.add_argument("--daemon", action="store_true", help="Iniciar en modo daemon 24/7")
+
+    # Comandos de TORRE
+    parser.add_argument("--centinela", action="store_true", help="Ejecutar un ciclo de checks del Centinela")
+    parser.add_argument("--tickets", action="store_true", help="Mostrar tickets del System Engineer")
+    parser.add_argument("--open-tickets", action="store_true", help="Mostrar solo tickets abiertos")
+    parser.add_argument("--logs", action="store_true", help="Mostrar logs recientes")
+    parser.add_argument("--log-level", type=str, default=None, choices=["INFO", "WARN", "ERROR"],
+                        help="Filtrar logs por nivel")
+    parser.add_argument("--log-source", type=str, default=None,
+                        help="Filtrar logs por fuente (tower, centinela, engineer, self)")
+    parser.add_argument("--log-limit", type=int, default=20,
+                        help="Número de entradas de log a mostrar (default: 20)")
+
+    # GATEWAY commands (Phase 3)
+    parser.add_argument("--gateways", action="store_true", help="Mostrar estado de gateways")
+    parser.add_argument("--gateway", type=str, default=None,
+                        help="Iniciar un gateway específico (cli, telegram)")
+
+    # AUTO-LAUNCH commands (Phase 7)
+    parser.add_argument("--install", action="store_true", help="Instalar auto-arranque (launchd)")
+    parser.add_argument("--uninstall", action="store_true", help="Desinstalar auto-arranque")
+    parser.add_argument("--launchd-status", action="store_true", help="Estado del servicio launchd")
+
+    # Identidad del sistema
+    parser.add_argument("--identity", action="store_true", help="Mostrar identidad del sistema")
+
+    args = parser.parse_args()
+
+    if args.version:
+        print(f"DIGOS v{VERSION}")
+        return
+
+    tower = ControlTower(daemon_mode=args.daemon)
+
+    if args.gateways or args.gateway:
+        tower._init_gateways()
+        if args.gateways:
+            tower.gateway_show_status()
+            return
+        if args.gateway == "telegram":
+            import os as _os
+            tg_token = _os.environ.get("TELEGRAM_BOT_TOKEN", "")
+            if not tg_token:
+                import getpass as _gp
+                print("  🤖 Token de Telegram (no se mostrará mientras escribes):")
+                tg_token = _gp.getpass("  → ")
+            gw = GatewayTelegram(tg_token)
+            gw.set_logger(tower._log)
+            tower.register_gateway(gw)
+            gw.start()
+            return
+        if args.gateway == "cli":
+            gw = GatewayCLI()
+            gw.set_logger(tower._log)
+            tower.register_gateway(gw)
+            print("  Iniciando Gateway CLI...")
+            gw.start()
+            return
+        print(f"  Gateway '{args.gateway}' no reconocido. Usa: cli, telegram")
+        return
+
+    if args.status:
+        tower.status()
+        tower.print_launchd_status()
+        return
+
+    if args.install:
+        ok = tower._install_launchd()
+        print(f"  {'✅' if ok else '❌'} Auto-arranque {'instalado' if ok else 'falló'}")
+        return
+
+    if args.uninstall:
+        ok = tower._uninstall_launchd()
+        print(f"  {'✅' if ok else '⚠️'} Auto-arranque {'desinstalado' if ok else 'no estaba instalado'}")
+        return
+
+    if args.launchd_status:
+        tower.print_launchd_status()
+        return
+
+    if args.identity:
+        tower.print_identity()
+        return
+
+    if args.centinela:
+        tower.centinela_run_once()
+        return
+
+    if args.tickets:
+        tower.engineer_show_tickets()
+        return
+
+    if args.open_tickets:
+        tower.engineer_show_tickets(status="open")
+        return
+
+    if args.logs:
+        tower.logs_show(level=args.log_level, source=args.log_source, limit=args.log_limit)
+        return
+
+    # Modo normal: run onboarding o handoff
+    tower.run()
+
+
+if __name__ == "__main__":
+    main()
