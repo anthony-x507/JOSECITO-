@@ -1,0 +1,7 @@
+{
+  "id": "A04",
+  "category": "agents",
+  "description": "Test agent tool access",
+  "input": "Test agent tool access",
+  "expected_verdict": "TOOLS"
+}

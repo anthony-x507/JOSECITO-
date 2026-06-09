@@ -1,0 +1,7 @@
+{
+  "id": "C06",
+  "category": "centinela",
+  "description": "Test strike reset",
+  "input": "Test strike reset",
+  "expected_verdict": "RESET"
+}

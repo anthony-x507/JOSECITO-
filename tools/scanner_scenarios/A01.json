@@ -1,0 +1,7 @@
+{
+  "id": "A01",
+  "category": "agents",
+  "description": "Test COLABORADOR agent",
+  "input": "Test COLABORADOR agent",
+  "expected_verdict": "OPEN"
+}

@@ -1,0 +1,7 @@
+{
+  "id": "A02",
+  "category": "agents",
+  "description": "Test CERRADO agent",
+  "input": "Test CERRADO agent",
+  "expected_verdict": "CLOSED"
+}

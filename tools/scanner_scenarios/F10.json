@@ -1,0 +1,7 @@
+{
+  "id": "F10",
+  "category": "factory",
+  "description": "Build a logger",
+  "input": "Build a logger",
+  "expected_verdict": "pending"
+}

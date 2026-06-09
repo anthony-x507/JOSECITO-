@@ -1,0 +1,7 @@
+{
+  "id": "F03",
+  "category": "factory",
+  "description": "Add web search",
+  "input": "Add web search",
+  "expected_verdict": "pending"
+}

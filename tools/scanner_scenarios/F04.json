@@ -1,0 +1,7 @@
+{
+  "id": "F04",
+  "category": "factory",
+  "description": "Build a code review tool",
+  "input": "Build a code review tool",
+  "expected_verdict": "pending"
+}

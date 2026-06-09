@@ -1,0 +1,7 @@
+{
+  "id": "C02",
+  "category": "centinela",
+  "description": "Test API key invalid",
+  "input": "Test API key invalid",
+  "expected_verdict": "STRIKE"
+}

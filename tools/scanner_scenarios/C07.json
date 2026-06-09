@@ -1,0 +1,7 @@
+{
+  "id": "C07",
+  "category": "centinela",
+  "description": "Test factory stall",
+  "input": "Test factory stall",
+  "expected_verdict": "STALL"
+}

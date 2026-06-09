@@ -1,0 +1,7 @@
+{
+  "id": "T03",
+  "category": "tower",
+  "description": "Test diagnostics",
+  "input": "Test diagnostics",
+  "expected_verdict": "DIAG"
+}

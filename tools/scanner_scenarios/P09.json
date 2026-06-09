@@ -1,0 +1,8 @@
+{
+  "id": "P09",
+  "category": "language",
+  "description": "Adios",
+  "input": "Adios",
+  "expected_verdict": "CLEAN",
+  "expected_language": "es"
+}

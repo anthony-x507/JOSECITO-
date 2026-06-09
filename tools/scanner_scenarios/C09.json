@@ -1,0 +1,7 @@
+{
+  "id": "C09",
+  "category": "centinela",
+  "description": "Test 24/7 loop",
+  "input": "Test 24/7 loop",
+  "expected_verdict": "RUNNING"
+}

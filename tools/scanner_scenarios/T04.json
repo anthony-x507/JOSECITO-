@@ -1,0 +1,7 @@
+{
+  "id": "T04",
+  "category": "tower",
+  "description": "Test 3h cycle",
+  "input": "Test 3h cycle",
+  "expected_verdict": "3H"
+}

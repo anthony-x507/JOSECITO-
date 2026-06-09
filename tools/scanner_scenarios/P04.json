@@ -1,0 +1,8 @@
+{
+  "id": "P04",
+  "category": "language",
+  "description": "Thank you",
+  "input": "Thank you",
+  "expected_verdict": "CLEAN",
+  "expected_language": "en"
+}

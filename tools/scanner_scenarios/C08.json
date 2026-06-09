@@ -1,0 +1,7 @@
+{
+  "id": "C08",
+  "category": "centinela",
+  "description": "Test factory healthy",
+  "input": "Test factory healthy",
+  "expected_verdict": "HEALTHY"
+}

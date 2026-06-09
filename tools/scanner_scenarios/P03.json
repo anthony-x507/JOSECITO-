@@ -1,0 +1,8 @@
+{
+  "id": "P03",
+  "category": "language",
+  "description": "Gracias",
+  "input": "Gracias",
+  "expected_verdict": "CLEAN",
+  "expected_language": "es"
+}

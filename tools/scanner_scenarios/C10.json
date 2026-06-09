@@ -1,0 +1,7 @@
+{
+  "id": "C10",
+  "category": "centinela",
+  "description": "Test no LLM",
+  "input": "Test no LLM",
+  "expected_verdict": "NOLLM"
+}

@@ -1,0 +1,8 @@
+{
+  "id": "P10",
+  "category": "language",
+  "description": "Goodbye",
+  "input": "Goodbye",
+  "expected_verdict": "CLEAN",
+  "expected_language": "en"
+}

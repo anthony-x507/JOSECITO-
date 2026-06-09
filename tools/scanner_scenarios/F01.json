@@ -1,0 +1,7 @@
+{
+  "id": "F01",
+  "category": "factory",
+  "description": "Build an image generator",
+  "input": "Build an image generator",
+  "expected_verdict": "pending"
+}

@@ -1,0 +1,7 @@
+{
+  "id": "F09",
+  "category": "factory",
+  "description": "Create a database connector",
+  "input": "Create a database connector",
+  "expected_verdict": "pending"
+}

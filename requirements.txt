@@ -1,0 +1,4 @@
+# MASTER
+# No third-party dependencies required for v1.0.
+# Uses only Python 3.8+ standard library.
+# Optional: Ollama for local models

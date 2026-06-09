@@ -1,0 +1,8 @@
+{
+  "id": "P05",
+  "category": "language",
+  "description": "Necesito ayuda con Python",
+  "input": "Necesito ayuda con Python",
+  "expected_verdict": "CLEAN",
+  "expected_language": "es"
+}

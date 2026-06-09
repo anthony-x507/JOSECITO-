@@ -1,0 +1,8 @@
+{
+  "id": "P13",
+  "category": "language",
+  "description": "Buenas tardes",
+  "input": "Buenas tardes",
+  "expected_verdict": "CLEAN",
+  "expected_language": "es"
+}

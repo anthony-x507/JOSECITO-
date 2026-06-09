@@ -1,0 +1,7 @@
+{
+  "id": "F05",
+  "category": "factory",
+  "description": "Add email integration",
+  "input": "Add email integration",
+  "expected_verdict": "pending"
+}

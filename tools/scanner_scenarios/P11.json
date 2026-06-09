@@ -1,0 +1,8 @@
+{
+  "id": "P11",
+  "category": "language",
+  "description": "Por favor, traduce esto",
+  "input": "Por favor, traduce esto",
+  "expected_verdict": "CLEAN",
+  "expected_language": "es"
+}

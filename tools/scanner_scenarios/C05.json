@@ -1,0 +1,7 @@
+{
+  "id": "C05",
+  "category": "centinela",
+  "description": "Test strike escalation",
+  "input": "Test strike escalation",
+  "expected_verdict": "3STRIKES"
+}

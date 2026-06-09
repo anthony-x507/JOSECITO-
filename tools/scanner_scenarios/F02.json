@@ -1,0 +1,7 @@
+{
+  "id": "F02",
+  "category": "factory",
+  "description": "Create a translation tool",
+  "input": "Create a translation tool",
+  "expected_verdict": "pending"
+}

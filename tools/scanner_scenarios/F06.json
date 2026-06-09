@@ -1,0 +1,7 @@
+{
+  "id": "F06",
+  "category": "factory",
+  "description": "Create a calendar tool",
+  "input": "Create a calendar tool",
+  "expected_verdict": "pending"
+}

@@ -1,0 +1,7 @@
+{
+  "id": "C04",
+  "category": "centinela",
+  "description": "Test Telegram token invalid",
+  "input": "Test Telegram token invalid",
+  "expected_verdict": "STRIKE"
+}

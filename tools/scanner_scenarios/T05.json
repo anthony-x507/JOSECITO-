@@ -1,0 +1,7 @@
+{
+  "id": "T05",
+  "category": "tower",
+  "description": "Test SIGTERM resist",
+  "input": "Test SIGTERM resist",
+  "expected_verdict": "RESIST"
+}

@@ -1,0 +1,7 @@
+{
+  "id": "C03",
+  "category": "centinela",
+  "description": "Test Telegram token valid",
+  "input": "Test Telegram token valid",
+  "expected_verdict": "OK"
+}

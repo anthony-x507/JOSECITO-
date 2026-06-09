@@ -1,0 +1,7 @@
+{
+  "id": "T02",
+  "category": "tower",
+  "description": "Test tower sleep",
+  "input": "Test tower sleep",
+  "expected_verdict": "SLEEP"
+}

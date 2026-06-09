@@ -1,0 +1,7 @@
+{
+  "id": "F08",
+  "category": "factory",
+  "description": "Add reminder system",
+  "input": "Add reminder system",
+  "expected_verdict": "pending"
+}

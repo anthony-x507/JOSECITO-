@@ -1,0 +1,8 @@
+{
+  "id": "P01",
+  "category": "language",
+  "description": "Hola, c\u00f3mo est\u00e1s?",
+  "input": "Hola, c\u00f3mo est\u00e1s?",
+  "expected_verdict": "CLEAN",
+  "expected_language": "es"
+}

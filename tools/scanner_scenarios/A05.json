@@ -1,0 +1,7 @@
+{
+  "id": "A05",
+  "category": "agents",
+  "description": "Test agent shutdown",
+  "input": "Test agent shutdown",
+  "expected_verdict": "CLEAN"
+}

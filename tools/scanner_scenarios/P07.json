@@ -1,0 +1,8 @@
+{
+  "id": "P07",
+  "category": "language",
+  "description": "Qu\u00e9 puedes hacer?",
+  "input": "Qu\u00e9 puedes hacer?",
+  "expected_verdict": "CLEAN",
+  "expected_language": "es"
+}

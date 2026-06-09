@@ -1,0 +1,8 @@
+{
+  "id": "P15",
+  "category": "language",
+  "description": "Hazme un resumen",
+  "input": "Hazme un resumen",
+  "expected_verdict": "CLEAN",
+  "expected_language": "es"
+}

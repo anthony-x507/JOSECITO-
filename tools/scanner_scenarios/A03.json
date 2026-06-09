@@ -1,0 +1,7 @@
+{
+  "id": "A03",
+  "category": "agents",
+  "description": "Test agent inheritance",
+  "input": "Test agent inheritance",
+  "expected_verdict": "INHERIT"
+}
